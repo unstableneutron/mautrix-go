@@ -3865,6 +3865,10 @@ func (portal *Portal) handleRemoteMessageRemove(ctx context.Context, source *Use
 	}
 	dontRenderPlaceholderProvider, ok := evt.(RemoteMessageRemoveWithoutPlaceholder)
 	dontRenderPlaceholder := ok && dontRenderPlaceholderProvider.DontRenderPlaceholder()
+	if !onlyForMe && portal.shouldMarkRemoteDelete(evt) {
+		// The parts stay in the database so replies and reactions still resolve.
+		return portal.markMessageParts(ctx, targetParts, intent, getEventTS(evt))
+	}
 	res := portal.redactMessageParts(ctx, targetParts, intent, getEventTS(evt), "", dontRenderPlaceholder)
 	if !res.Success {
 		return res

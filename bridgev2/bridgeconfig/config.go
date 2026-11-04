@@ -91,6 +91,7 @@ type BridgeConfig struct {
 	EnableSendStateRequests       bool               `yaml:"enable_send_state_requests"`
 	PhoneNumbersInProfile         bool               `yaml:"phone_numbers_in_profile"`
 	ViewLimitedMedia              bool               `yaml:"view_limited_media"`
+	RemoteDeletes                 string             `yaml:"remote_deletes"`
 	CleanupOnLogout               CleanupOnLogouts   `yaml:"cleanup_on_logout"`
 	Relay                         RelayConfig        `yaml:"relay"`
 	PortalCreateFilter            PortalCreateFilter `yaml:"portal_create_filter"`
