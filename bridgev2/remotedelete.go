@@ -54,11 +54,12 @@ func (portal *Portal) shouldMarkRemoteDelete(evt RemoteMessageRemove) bool {
 
 // markMessageParts edits every part of a message deleted on the remote
 // network to its last content plus a visible marker. A part whose content
-// can't be read back is left untouched and gets a marker reply instead, so
-// nothing is ever shown as kept when it wasn't.
+// can't be read back, such as when the bridge ratchets its keys on decrypt,
+// is left untouched and the message gets a marker reply instead.
 func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Message, intent MatrixAPI, ts time.Time) EventHandlingResult {
 	log := zerolog.Ctx(ctx)
-	marker := "🗑 Deleted in " + portal.Bridge.Network.GetName().DisplayName + " · " + ts.Local().Format("2006-01-02 15:04 -07")
+	// Networks often stamp a delete with the message's own time, so the marker carries none.
+	marker := "🗑 Deleted in " + portal.Bridge.Network.GetName().DisplayName
 	var errorList []error
 	var unreadable *database.Message
 	for _, part := range parts {
@@ -67,7 +68,7 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 		}
 		content, err := portal.latestPartContent(ctx, intent, part, marker)
 		if err != nil {
-			log.Warn().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't read deleted message part, leaving it untouched")
+			log.Warn().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't read deleted message part back, leaving it untouched")
 			if unreadable == nil {
 				unreadable = part
 			}
@@ -89,7 +90,7 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 	if unreadable != nil {
 		notice := &event.MessageEventContent{
 			MsgType:   event.MsgNotice,
-			Body:      marker + " (the bridge couldn't read the original back to keep it)",
+			Body:      marker + ". Kept here as it was.",
 			Mentions:  &event.Mentions{},
 			RelatesTo: (&event.RelatesTo{}).SetReplyTo(unreadable.MXID),
 		}
