@@ -96,6 +96,9 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 		}
 		if _, err := intent.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{Parsed: notice}, &MatrixSendExtra{Timestamp: ts}); err != nil {
 			errorList = append(errorList, err)
+		} else if err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, unreadable.ID); err != nil {
+			// Forgetting the message makes a repeated delete a no-op instead of another notice.
+			log.Err(err).Msg("Failed to forget kept message")
 		}
 	}
 	if len(errorList) > 0 {
