@@ -70,8 +70,9 @@ bridge:
     phone_numbers_in_profile: false
     # What should be done when a message is deleted on the remote network?
     #   redact - Redact the Matrix events (default).
-    #   mark - Keep the events and edit them to their last bridged content with a
-    #          "Deleted in <network>" marker. Deletes the network reports as yours stay redactions.
+    #   mark - Keep the events with a "Deleted in <network>" marker: an edit of each part to its last
+    #          content, or, when the bridge can't decrypt its own events (e.g. encryption.delete_keys.
+    #          ratchet_on_decrypt), a marker reply. Deletes the network reports as yours stay redactions.
     #          The content stays in the room for as long as the room keeps it, which may
     #          outlast the remote network's own retention. Deletes made on Matrix are unaffected.
     #   mark_all - Like mark, but also keep messages you deleted on the remote network.
