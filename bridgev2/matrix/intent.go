@@ -44,6 +44,7 @@ type ASIntent struct {
 }
 
 var _ bridgev2.MatrixAPI = (*ASIntent)(nil)
+var _ bridgev2.MatrixAPIWithEditLookup = (*ASIntent)(nil)
 var _ bridgev2.MarkAsDMMatrixAPI = (*ASIntent)(nil)
 
 func (as *ASIntent) SendMessage(ctx context.Context, roomID id.RoomID, eventType event.Type, content *event.Content, extra *bridgev2.MatrixSendExtra) (*mautrix.RespSendEvent, error) {
@@ -778,6 +779,33 @@ func (as *ASIntent) GetEvent(ctx context.Context, roomID id.RoomID, eventID id.E
 	}
 
 	return evt, nil
+}
+
+func (as *ASIntent) GetLatestEdit(ctx context.Context, roomID id.RoomID, eventID id.EventID) (*event.Event, error) {
+	resp, err := as.Matrix.GetRelations(ctx, roomID, eventID, &mautrix.ReqGetRelations{
+		RelationType: event.RelReplace,
+		Dir:          mautrix.DirectionBackward,
+		Limit:        20,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, evt := range resp.Chunk {
+		if evt.Sender != as.Matrix.UserID {
+			continue
+		}
+		if err = evt.Content.ParseRaw(evt.Type); err != nil {
+			return nil, err
+		}
+		if evt.Type == event.EventEncrypted {
+			if as.Connector.Crypto == nil || as.Connector.Config.Encryption.DeleteKeys.RatchetOnDecrypt {
+				return nil, errors.New("can't decrypt the event")
+			}
+			return as.Connector.Crypto.Decrypt(ctx, evt)
+		}
+		return evt, nil
+	}
+	return nil, nil
 }
 
 func (as *ASIntent) GetStateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string) (*event.Event, error) {
