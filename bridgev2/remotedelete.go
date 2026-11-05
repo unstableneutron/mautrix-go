@@ -8,7 +8,10 @@ package bridgev2
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"html"
 	"strings"
 	"time"
@@ -30,6 +33,18 @@ const (
 // remoteDeletedKey flags content the bridge already marked as deleted, so a
 // repeated delete doesn't stack markers.
 const remoteDeletedKey = "fi.mau.bridge.remote_deleted"
+
+// RemoteEventWithCompletion is a remote event that wants the final result of
+// handling it. HandleCompleted is called exactly once when the portal's handler
+// returns or panics (as a failure wrapping ErrPanicInEventHandler), with the
+// handler's own result, before the event queue drops or ignores errors and
+// even if handling went on in the background past the queue's timeout. It is
+// not called for events that never reach a portal's handler; QueueRemoteEvent's
+// return value covers those.
+type RemoteEventWithCompletion interface {
+	RemoteEvent
+	HandleCompleted(ctx context.Context, res EventHandlingResult)
+}
 
 // MatrixAPIWithEditLookup can read the newest edit of an event.
 type MatrixAPIWithEditLookup interface {
@@ -55,7 +70,13 @@ func (portal *Portal) shouldMarkRemoteDelete(evt RemoteMessageRemove) bool {
 // markMessageParts edits every part of a message deleted on the remote
 // network to its last content plus a visible marker. A part whose content
 // can't be read back, such as when the bridge ratchets its keys on decrypt,
-// is left untouched and the message gets a marker reply instead.
+// is left untouched and the message gets a marker reply instead, after which
+// the message's rows are deleted so a repeated delete is a no-op.
+//
+// Any send or database error fails the result and skips the reply and the row
+// deletion, so the rows stay for a retry. Every send uses a transaction ID
+// derived from the message part, so a retry can't duplicate an edit or reply,
+// and parts already marked are skipped.
 func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Message, intent MatrixAPI, ts time.Time) EventHandlingResult {
 	log := zerolog.Ctx(ctx)
 	// Networks often stamp a delete with the message's own time, so the marker carries none.
@@ -77,34 +98,47 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 			continue
 		}
 		wrapped := &event.Content{Parsed: content, Raw: map[string]any{remoteDeletedKey: true}}
-		if _, err = intent.SendMessage(ctx, portal.MXID, event.EventMessage, wrapped, &MatrixSendExtra{Timestamp: ts, MessageMeta: part}); err != nil {
+		_, err = intent.SendMessage(ctx, portal.MXID, event.EventMessage, wrapped, &MatrixSendExtra{
+			Timestamp: ts, MessageMeta: part, TransactionID: remoteDeleteTxnID("edit", part),
+		})
+		if err != nil {
 			log.Err(err).Stringer("part_mxid", part.MXID).Msg("Failed to mark message part deleted")
-			errorList = append(errorList, err)
+			errorList = append(errorList, fmt.Errorf("failed to mark part %q deleted: %w", part.PartID, err))
 			continue
 		}
 		part.EditCount++
 		if err = portal.Bridge.DB.Message.Update(ctx, part); err != nil {
 			log.Err(err).Stringer("part_mxid", part.MXID).Msg("Failed to save marked message part")
+			errorList = append(errorList, fmt.Errorf("failed to save marked part %q: %w", part.PartID, err))
 		}
 	}
-	if unreadable != nil {
+	if unreadable != nil && len(errorList) == 0 {
 		notice := &event.MessageEventContent{
 			MsgType:   event.MsgNotice,
 			Body:      marker + ". Kept here as it was.",
 			Mentions:  &event.Mentions{},
 			RelatesTo: (&event.RelatesTo{}).SetReplyTo(unreadable.MXID),
 		}
-		if _, err := intent.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{Parsed: notice}, &MatrixSendExtra{Timestamp: ts}); err != nil {
-			errorList = append(errorList, err)
+		_, err := intent.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{Parsed: notice}, &MatrixSendExtra{
+			Timestamp: ts, TransactionID: remoteDeleteTxnID("notice", unreadable),
+		})
+		if err != nil {
+			errorList = append(errorList, fmt.Errorf("failed to send deleted marker: %w", err))
 		} else if err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, unreadable.ID); err != nil {
-			// Forgetting the message makes a repeated delete a no-op instead of another notice.
-			log.Err(err).Msg("Failed to forget kept message")
+			errorList = append(errorList, fmt.Errorf("failed to forget kept message: %w", err))
 		}
 	}
 	if len(errorList) > 0 {
 		return EventHandlingResultFailed.WithError(errors.Join(errorList...))
 	}
 	return EventHandlingResultSuccess
+}
+
+// remoteDeleteTxnID is the Matrix transaction ID of a kept-delete send for a
+// message part, the same on every retry.
+func remoteDeleteTxnID(kind string, part *database.Message) string {
+	sum := sha256.Sum256([]byte(string(part.Room.ID) + "\x00" + string(part.Room.Receiver) + "\x00" + string(part.ID) + "\x00" + string(part.PartID)))
+	return "mau-remote-delete-" + kind + "-" + hex.EncodeToString(sum[:16])
 }
 
 // latestPartContent returns the edit that marks a part deleted, built from
