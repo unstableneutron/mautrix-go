@@ -310,4 +310,14 @@ func TestEditVersionResolvesForRepliesAndReactions(t *testing.T) {
 	if !res.Success || res.Ignored || len(client.reactions) != 1 {
 		t.Fatalf("reaction on the old version = %+v, network got %v", res, client.reactions)
 	}
+	res = portal.Bridge.QueueMatrixEvent(ctx, &event.Event{
+		ID: "$reply", RoomID: portal.MXID, Sender: testUserMXID, Type: event.EventMessage, Timestamp: 3001,
+		Content: event.Content{Parsed: &event.MessageEventContent{
+			MsgType: event.MsgText, Body: "You see this?",
+			RelatesTo: (&event.RelatesTo{}).SetReplyTo("$part1"),
+		}},
+	})
+	if !res.Success || len(client.replies) != 1 || client.replies[0] != msgID {
+		t.Fatalf("reply to the old version = %+v, network got reply targets %v; want %q", res, client.replies, msgID)
+	}
 }

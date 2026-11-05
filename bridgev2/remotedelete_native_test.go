@@ -48,6 +48,7 @@ func (tn testNetwork) LoadUserLogin(_ context.Context, login *UserLogin) error {
 type testClient struct {
 	NetworkAPI
 	reactions []string
+	replies   []networkid.MessageID
 }
 
 func (*testClient) IsLoggedIn() bool { return true }
@@ -59,7 +60,15 @@ func (*testClient) IsThisUser(_ context.Context, userID networkid.UserID) bool {
 	return userID == "me"
 }
 func (*testClient) GetCapabilities(context.Context, *Portal) *event.RoomFeatures {
-	return &event.RoomFeatures{}
+	return &event.RoomFeatures{Reply: event.CapLevelFullySupported}
+}
+func (tc *testClient) HandleMatrixMessage(_ context.Context, msg *MatrixMessage) (*MatrixMessageResponse, error) {
+	var replyTo networkid.MessageID
+	if msg.ReplyTo != nil {
+		replyTo = msg.ReplyTo.ID
+	}
+	tc.replies = append(tc.replies, replyTo)
+	return &MatrixMessageResponse{DB: &database.Message{ID: networkid.MessageID("out" + msg.Event.ID)}}, nil
 }
 func (*testClient) PreHandleMatrixReaction(_ context.Context, msg *MatrixReaction) (MatrixReactionPreResponse, error) {
 	return MatrixReactionPreResponse{SenderID: "me", Emoji: msg.Content.RelatesTo.Key}, nil
