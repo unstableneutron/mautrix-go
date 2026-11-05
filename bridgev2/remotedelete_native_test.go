@@ -60,6 +60,9 @@ func (tc *testClient) HandleMatrixReaction(_ context.Context, msg *MatrixReactio
 	tc.reactions = append(tc.reactions, msg.Content.RelatesTo.Key)
 	return &database.Reaction{}, nil
 }
+func (*testClient) HandleMatrixReactionRemove(context.Context, *MatrixReactionRemove) error {
+	return nil
+}
 
 type testMatrix struct {
 	MatrixConnector
@@ -495,18 +498,27 @@ func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 	}
 }
 
+// completionEvent is a remote delete of a message that doesn't exist, which
+// the portal ignores, or whose pre-handler panics. This base has no
+// RemotePreHandlerWithResult, so the handler's own result is what reaches
+// HandleCompleted.
 type completionEvent struct {
 	RemoteEvent
-	result *EventHandlingResult
 	panics bool
 	calls  []EventHandlingResult
 }
 
-func (ce *completionEvent) PreHandleWithResult(context.Context, *Portal) *EventHandlingResult {
+func (ce *completionEvent) GetType() RemoteEventType              { return RemoteEventMessageRemove }
+func (ce *completionEvent) GetSender() EventSender                { return EventSender{Sender: "alice"} }
+func (ce *completionEvent) GetTargetMessage() networkid.MessageID { return "missing" }
+func (ce *completionEvent) AddLogContext(c zerolog.Context) zerolog.Context {
+	return c
+}
+
+func (ce *completionEvent) PreHandle(context.Context, *Portal) {
 	if ce.panics {
 		panic("connector bug")
 	}
-	return ce.result
 }
 
 func (ce *completionEvent) HandleCompleted(_ context.Context, res EventHandlingResult) {
@@ -516,20 +528,22 @@ func (ce *completionEvent) HandleCompleted(_ context.Context, res EventHandlingR
 func TestRemoteEventCompletion(t *testing.T) {
 	portal, _ := newTestPortal(t, RemoteDeletesRedact)
 	ctx := zerolog.Nop().WithContext(context.Background())
-	failed := EventHandlingResultFailed.WithError(errors.New("network refused"))
+	login, err := portal.Bridge.GetExistingUserLoginByID(ctx, "login")
+	if err != nil || login == nil {
+		t.Fatalf("login: %v", err)
+	}
 	for _, tc := range []struct {
 		name    string
 		evt     *completionEvent
-		success bool
+		ignored bool
 		errIs   error
 	}{
-		{"success", &completionEvent{result: &EventHandlingResultSuccess}, true, nil},
-		{"failure", &completionEvent{result: &failed}, false, failed.Error},
+		{"handled", &completionEvent{}, true, nil},
 		{"panic", &completionEvent{panics: true}, false, ErrPanicInEventHandler},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var done []EventHandlingResult
-			portal.handleSingleEvent(ctx, &portalRemoteEvent{evt: tc.evt, evtType: RemoteEventMessageRemove}, func(res EventHandlingResult) {
+			portal.handleSingleEvent(ctx, &portalRemoteEvent{evt: tc.evt, source: login, evtType: RemoteEventMessageRemove}, func(res EventHandlingResult) {
 				done = append(done, res)
 			})
 			if len(done) != 1 {
@@ -539,8 +553,8 @@ func TestRemoteEventCompletion(t *testing.T) {
 				t.Fatalf("HandleCompleted called %d times, want once", len(tc.evt.calls))
 			}
 			got := tc.evt.calls[0]
-			if got.Success != tc.success || (tc.errIs == nil) != (got.Error == nil) || (tc.errIs != nil && !errors.Is(got.Error, tc.errIs)) {
-				t.Fatalf("HandleCompleted got %+v, want success=%v error %v", got, tc.success, tc.errIs)
+			if got.Success != tc.ignored || got.Ignored != tc.ignored || (tc.errIs == nil) != (got.Error == nil) || (tc.errIs != nil && !errors.Is(got.Error, tc.errIs)) {
+				t.Fatalf("HandleCompleted got %+v, want ignored=%v error %v", got, tc.ignored, tc.errIs)
 			}
 		})
 	}
