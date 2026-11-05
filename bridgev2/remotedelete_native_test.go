@@ -430,8 +430,9 @@ type simpleRemoteRemove struct {
 func (s *simpleRemoteRemove) GetSender() EventSender { return s.sender }
 
 // The bot's marker reaction must never reach the network's reaction API: not
-// its echo, not a retried echo, and not a copy of the flagged content sent by
-// someone else. A plain reaction by the user is the control and is forwarded.
+// its echo, not a retried echo, not flagged content sent by someone else, and
+// not the user tapping the 🗑️ chip while the marker is enabled. A plain
+// reaction by the user is the control and is forwarded.
 func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 	ctx := zerolog.Nop().WithContext(context.Background())
 	portal, msgID := newTestPortal(t, RemoteDeletesMark)
@@ -449,8 +450,9 @@ func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 	}
 	marker := bot.contents[0]
 	client := portal.Bridge.Network.(testNetwork).client
-	queue := func(sender id.UserID, raw map[string]any, n int) EventHandlingResult {
+	queue := func(sender id.UserID, key string, raw map[string]any, n int) EventHandlingResult {
 		rel := marker.Parsed.(*event.ReactionEventContent).RelatesTo
+		rel.Key = key
 		return portal.Bridge.QueueMatrixEvent(ctx, &event.Event{
 			ID: id.EventID(fmt.Sprintf("$reaction%d", n)), RoomID: portal.MXID, Sender: sender,
 			Type: event.EventReaction, Timestamp: 2000,
@@ -458,28 +460,39 @@ func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 		})
 	}
 	flagged := map[string]any{remoteDeletedKey: true}
+	trash := RemoteDeleteReactionKey
 	for i, tc := range []struct {
 		name   string
 		sender id.UserID
+		key    string
 		raw    map[string]any
 	}{
-		{"bot echo", testBotMXID, flagged},
-		{"bot echo retried", testBotMXID, flagged},
-		{"bot reaction without the flag", testBotMXID, nil},
-		{"flagged reaction from the user", testUserMXID, flagged},
+		{"bot echo", testBotMXID, trash, flagged},
+		{"bot echo retried", testBotMXID, trash, flagged},
+		{"bot reaction without the flag", testBotMXID, trash, nil},
+		{"flagged reaction from the user", testUserMXID, "👍", flagged},
+		{"user tapping the 🗑️ chip", testUserMXID, trash, nil},
 	} {
-		if res := queue(tc.sender, tc.raw, i); !res.Ignored {
+		if res := queue(tc.sender, tc.key, tc.raw, i); !res.Ignored {
 			t.Errorf("%s: result = %+v, want it ignored", tc.name, res)
 		}
 	}
 	if len(client.reactions) != 0 {
 		t.Fatalf("network got reactions %v from markers", client.reactions)
 	}
-	if res := queue(testUserMXID, nil, 99); !res.Success || res.Ignored {
+	if res := queue(testUserMXID, "👍", nil, 99); !res.Success || res.Ignored {
 		t.Fatalf("control reaction result = %+v", res)
 	}
-	if len(client.reactions) != 1 {
-		t.Fatalf("network got %v, want the user's own reaction", client.reactions)
+	if len(client.reactions) != 1 || client.reactions[0] != "👍" {
+		t.Fatalf("network got %v, want the user's own 👍", client.reactions)
+	}
+	// With the reaction marker off, 🗑️ is an ordinary reaction again.
+	portal.Bridge.Config.RemoteDeleteReaction = false
+	if res := queue(testUserMXID, trash, nil, 100); !res.Success || res.Ignored {
+		t.Fatalf("🗑️ with the marker off: result = %+v", res)
+	}
+	if len(client.reactions) != 2 || client.reactions[1] != trash {
+		t.Fatalf("network got %v, want the user's 🗑️ with the marker off", client.reactions)
 	}
 }
 

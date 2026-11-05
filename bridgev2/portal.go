@@ -1580,6 +1580,12 @@ func (portal *Portal) handleMatrixReaction(ctx context.Context, sender *UserLogi
 	log.UpdateContext(func(c zerolog.Context) zerolog.Context {
 		return c.Stringer("reaction_target_mxid", content.RelatesTo.EventID)
 	})
+	if portal.Bridge.Config.RemoteDeleteReaction && content.RelatesTo.Key == RemoteDeleteReactionKey {
+		// The bot's 🗑️ marks remote deletes on Matrix only; tapping its chip
+		// must not react on the network either.
+		log.Debug().Msg("Not bridging the remote delete marker reaction")
+		return EventHandlingResultIgnored
+	}
 	reactionTarget, err := portal.Bridge.DB.Message.GetPartByMXID(ctx, content.RelatesTo.EventID)
 	if err != nil {
 		log.Err(err).Msg("Failed to get reaction target message from database")
