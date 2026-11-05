@@ -116,22 +116,89 @@ func (portal *Portal) addEditVersions(ctx context.Context, msgID networkid.Messa
 	if err != nil {
 		return err
 	}
-	kv := portal.Bridge.DB.KV
-	_, err = kv.Exec(ctx, `
-		INSERT INTO kv_store (bridge_id, key, value) VALUES ($1, $2, $3)
-		ON CONFLICT (bridge_id, key) DO UPDATE SET value = $3
-	`, kv.BridgeID, portal.editVersionsKey(msgID), string(raw))
-	if err != nil {
+	if err = portal.setKV(ctx, portal.editVersionsKey(msgID), string(raw)); err != nil {
 		return fmt.Errorf("failed to save kept edit versions: %w", err)
+	}
+	// Map each version's event back to the message, for replies and reactions.
+	for _, version := range added {
+		ref, err := json.Marshal(editVersionRef{Receiver: portal.Receiver, MessageID: msgID, PartID: version.PartID})
+		if err != nil {
+			return err
+		}
+		if err = portal.setKV(ctx, editVersionRefKey(version.MXID), string(ref)); err != nil {
+			return fmt.Errorf("failed to save kept edit version reference: %w", err)
+		}
 	}
 	return nil
 }
 
-func (portal *Portal) deleteEditVersions(ctx context.Context, msgID networkid.MessageID) error {
+// editVersionRef points a kept version's event ID back to its message.
+type editVersionRef struct {
+	Receiver  networkid.UserLoginID `json:"receiver"`
+	MessageID networkid.MessageID   `json:"message_id"`
+	PartID    networkid.PartID      `json:"part_id"`
+}
+
+func editVersionRefKey(mxid id.EventID) database.Key {
+	return database.Key("fi.mau.bridge.remote_edit_version_of\x1f" + string(mxid))
+}
+
+func (portal *Portal) setKV(ctx context.Context, key database.Key, value string) error {
 	kv := portal.Bridge.DB.KV
-	_, err := kv.Exec(ctx, `DELETE FROM kv_store WHERE bridge_id = $1 AND key = $2`, kv.BridgeID, portal.editVersionsKey(msgID))
+	_, err := kv.Exec(ctx, `
+		INSERT INTO kv_store (bridge_id, key, value) VALUES ($1, $2, $3)
+		ON CONFLICT (bridge_id, key) DO UPDATE SET value = $3
+	`, kv.BridgeID, key, value)
+	return err
+}
+
+// getPartByMXIDOrVersion is GetPartByMXID that also resolves an earlier
+// version kept by remote_edits to the message's current part, so a Matrix
+// reply or reaction to an old version reaches the remote message.
+func (portal *Portal) getPartByMXIDOrVersion(ctx context.Context, mxid id.EventID) (*database.Message, error) {
+	part, err := portal.Bridge.DB.Message.GetPartByMXID(ctx, mxid)
+	if err != nil || part != nil {
+		return part, err
+	}
+	kv := portal.Bridge.DB.KV
+	var raw string
+	err = kv.QueryRow(ctx, `SELECT value FROM kv_store WHERE bridge_id = $1 AND key = $2`, kv.BridgeID, editVersionRefKey(mxid)).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to get kept edit version reference: %w", err)
+	}
+	var ref editVersionRef
+	if err = json.Unmarshal([]byte(raw), &ref); err != nil {
+		return nil, fmt.Errorf("failed to parse kept edit version reference: %w", err)
+	}
+	parts, err := portal.Bridge.DB.Message.GetAllPartsByID(ctx, ref.Receiver, ref.MessageID)
+	if err != nil || len(parts) == 0 {
+		return nil, err
+	}
+	for _, candidate := range parts {
+		if candidate.PartID == ref.PartID {
+			return candidate, nil
+		}
+	}
+	// The part was removed by the edit; the message's first part stands in.
+	return parts[0], nil
+}
+
+func (portal *Portal) deleteEditVersions(ctx context.Context, msgID networkid.MessageID) error {
+	versions, err := portal.getEditVersions(ctx, msgID)
 	if err != nil {
-		return fmt.Errorf("failed to forget kept edit versions: %w", err)
+		return err
+	}
+	kv := portal.Bridge.DB.KV
+	keys := []database.Key{portal.editVersionsKey(msgID)}
+	for _, version := range versions {
+		keys = append(keys, editVersionRefKey(version.MXID))
+	}
+	for _, key := range keys {
+		if _, err = kv.Exec(ctx, `DELETE FROM kv_store WHERE bridge_id = $1 AND key = $2`, kv.BridgeID, key); err != nil {
+			return fmt.Errorf("failed to forget kept edit versions: %w", err)
+		}
 	}
 	return nil
 }
