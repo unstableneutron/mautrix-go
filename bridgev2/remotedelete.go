@@ -57,12 +57,26 @@ type MatrixAPIWithEditLookup interface {
 // shouldMarkRemoteDelete reports whether bridge.remote_deletes keeps a
 // message deleted on the remote network instead of redacting it. Deletes the
 // network reports as the user's own stay real deletes unless set to mark_all.
-func (portal *Portal) shouldMarkRemoteDelete(evt RemoteMessageRemove) bool {
+// Some networks (Telegram, Meta) don't say who deleted a message; then a
+// delete of a message the user sent counts as theirs, so it stays a real
+// delete, even if a moderator did it.
+func (portal *Portal) shouldMarkRemoteDelete(evt RemoteMessageRemove, source *UserLogin, parts []*database.Message) bool {
 	switch portal.Bridge.Config.RemoteDeletes {
 	case RemoteDeletesMarkAll:
 		return true
 	case RemoteDeletesMark:
-		return !evt.GetSender().IsFromMe
+		sender := evt.GetSender()
+		if sender.IsFromMe {
+			return false
+		}
+		if sender.Sender == "" && sender.SenderLogin == "" && source != nil {
+			for _, part := range parts {
+				if part.SenderMXID != "" && part.SenderMXID == source.UserMXID {
+					return false
+				}
+			}
+		}
+		return true
 	}
 	return false
 }
