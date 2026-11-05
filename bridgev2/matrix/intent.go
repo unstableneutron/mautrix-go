@@ -90,7 +90,7 @@ func (as *ASIntent) SendMessage(ctx context.Context, roomID id.RoomID, eventType
 			eventType = event.EventEncrypted
 		}
 	}
-	return as.Matrix.SendMessageEvent(ctx, roomID, eventType, content, mautrix.ReqSendEvent{Timestamp: extra.Timestamp.UnixMilli()})
+	return as.Matrix.SendMessageEvent(ctx, roomID, eventType, content, mautrix.ReqSendEvent{Timestamp: extra.Timestamp.UnixMilli(), TransactionID: extra.TransactionID})
 }
 
 func (as *ASIntent) fillMemberEvent(ctx context.Context, roomID id.RoomID, userID id.UserID, content *event.Content) {

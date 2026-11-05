@@ -149,11 +149,13 @@ type MatrixConnectorWithHTTPSettings interface {
 }
 
 type MatrixSendExtra struct {
-	Timestamp    time.Time
-	MessageMeta  *database.Message
-	ReactionMeta *database.Reaction
-	StreamOrder  int64
-	PartIndex    int
+	// TransactionID makes a resend with the same ID return the original event instead of a duplicate.
+	TransactionID string
+	Timestamp     time.Time
+	MessageMeta   *database.Message
+	ReactionMeta  *database.Reaction
+	StreamOrder   int64
+	PartIndex     int
 }
 
 // FileStreamResult is the result of a FileStreamCallback.
