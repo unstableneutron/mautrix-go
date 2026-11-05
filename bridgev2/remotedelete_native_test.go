@@ -60,6 +60,9 @@ func (tc *testClient) HandleMatrixReaction(_ context.Context, msg *MatrixReactio
 	tc.reactions = append(tc.reactions, msg.Content.RelatesTo.Key)
 	return &database.Reaction{}, nil
 }
+func (*testClient) HandleMatrixReactionRemove(context.Context, *MatrixReactionRemove) error {
+	return nil
+}
 
 type testMatrix struct {
 	MatrixConnector
