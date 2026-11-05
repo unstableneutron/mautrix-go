@@ -331,7 +331,7 @@ func sendUserInputAttachments(ce *Event, atts []*bridgev2.LoginUserInputAttachme
 		}
 		_, err = ce.Bot.SendMessage(ce.Ctx, ce.RoomID, event.EventMessage, &event.Content{Parsed: content}, nil)
 		if err != nil {
-			return nil
+			return fmt.Errorf("failed to send attachment %q: %w", att.FileName, err)
 		}
 	}
 	return nil
