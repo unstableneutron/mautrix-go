@@ -1338,7 +1338,7 @@ func (portal *Portal) handleMatrixMessage(ctx context.Context, sender *UserLogin
 	if caps.Thread.Partial() {
 		replyToID = relatesTo.GetNonFallbackReplyTo()
 		if threadRootID != "" {
-			threadRoot, err = portal.Bridge.DB.Message.GetPartByMXID(ctx, threadRootID)
+			threadRoot, err = portal.getPartByMXIDOrVersion(ctx, threadRootID)
 			if err != nil {
 				log.Err(err).Msg("Failed to get thread root message from database")
 			} else if threadRoot == nil {
@@ -1349,7 +1349,7 @@ func (portal *Portal) handleMatrixMessage(ctx context.Context, sender *UserLogin
 		replyToID = relatesTo.GetReplyTo()
 	}
 	if replyToID != "" && (caps.Reply.Partial() || caps.Thread.Partial()) {
-		replyTo, err = portal.Bridge.DB.Message.GetPartByMXID(ctx, replyToID)
+		replyTo, err = portal.getPartByMXIDOrVersion(ctx, replyToID)
 		if err != nil {
 			log.Err(err).Msg("Failed to get reply target message from database")
 		} else if replyTo == nil {
@@ -1720,7 +1720,7 @@ func (portal *Portal) handleMatrixReaction(ctx context.Context, sender *UserLogi
 		log.Debug().Msg("Not bridging the remote delete marker reaction")
 		return EventHandlingResultIgnored
 	}
-	reactionTarget, err := portal.Bridge.DB.Message.GetPartByMXID(ctx, content.RelatesTo.EventID)
+	reactionTarget, err := portal.getPartByMXIDOrVersion(ctx, content.RelatesTo.EventID)
 	if err != nil {
 		log.Err(err).Msg("Failed to get reaction target message from database")
 		return EventHandlingResultFailed.WithMSSError(fmt.Errorf("%w: failed to get reaction target: %w", ErrDatabaseError, err))
