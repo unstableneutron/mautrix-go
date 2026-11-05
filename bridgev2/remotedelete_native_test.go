@@ -167,7 +167,9 @@ func newTestPortal(t *testing.T, mode string) (*Portal, networkid.MessageID) {
 		RemoteDeleteNotice:   true,
 		RemoteDeleteReaction: true,
 		RemoteEdits:          RemoteEditsNewMessageOthers,
-		Permissions:          bridgeconfig.PermissionConfig{"*": &bridgeconfig.PermissionLevelUser},
+		// Without a prefix every Matrix message would be routed to the commands.
+		CommandPrefix: "!test",
+		Permissions:   bridgeconfig.PermissionConfig{"*": &bridgeconfig.PermissionLevelUser},
 	}
 	matrix := testMatrix{bot: &testIntent{mxid: testBotMXID}, ghosts: map[networkid.UserID]*testIntent{}}
 	br := NewBridge("test", db, zerolog.Nop(), cfg, matrix, testNetwork{client: &testClient{}}, func(*Bridge) CommandProcessor { return nil })
