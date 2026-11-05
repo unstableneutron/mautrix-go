@@ -3609,16 +3609,12 @@ func (portal *Portal) handleRemoteMessageRemove(ctx context.Context, source *Use
 			intent = senderIntent
 		}
 	}
-	res := portal.redactMessageParts(ctx, targetParts, intent, getEventTS(evt))
-	err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, evt.GetTargetMessage())
-	dontRenderPlaceholderProvider, ok := evt.(RemoteMessageRemoveWithoutPlaceholder)
-	dontRenderPlaceholder := ok && dontRenderPlaceholderProvider.DontRenderPlaceholder()
 	if !onlyForMe && portal.shouldMarkRemoteDelete(evt) {
 		// The parts stay in the database so replies and reactions still resolve.
 		return portal.markMessageParts(ctx, targetParts, intent, getEventTS(evt))
 	}
-	res := portal.redactMessageParts(ctx, targetParts, intent, getEventTS(evt), "", dontRenderPlaceholder)
-	err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, targetParts[0].ID)
+	res := portal.redactMessageParts(ctx, targetParts, intent, getEventTS(evt))
+	err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, evt.GetTargetMessage())
 	if err != nil {
 		log.Err(err).Msg("Failed to delete target message from database")
 	}
