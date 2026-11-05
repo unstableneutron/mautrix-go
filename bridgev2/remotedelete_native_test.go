@@ -99,6 +99,12 @@ func (tm testMatrix) GhostIntent(userID networkid.UserID) MatrixAPI {
 	return tm.ghosts[userID]
 }
 
+// NewUserIntent fails like a bridge without double puppeting, so the user's own
+// events fall back to their ghost.
+func (testMatrix) NewUserIntent(context.Context, id.UserID, string) (MatrixAPI, string, error) {
+	return nil, "", errors.New("double puppeting is not configured")
+}
+
 func (testMatrix) Init(*Bridge)                                                               {}
 func (tm testMatrix) BotIntent() MatrixAPI                                                    { return tm.bot }
 func (testMatrix) SendMessageStatus(context.Context, *MessageStatus, *MessageStatusEventInfo) {}

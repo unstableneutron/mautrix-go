@@ -282,6 +282,63 @@ func TestRemoteDeleteCoversEditVersions(t *testing.T) {
 	}
 }
 
+// Under mark, the user's own delete stays a real deletion: the message and
+// every kept edit version are redacted, nothing is marked, and the kept
+// version list and its references are forgotten.
+func TestRemoteDeleteOwnMessageRedactsVersions(t *testing.T) {
+	ctx := zerolog.Nop().WithContext(context.Background())
+	portal, msgID := newTestPortal(t, RemoteDeletesMark)
+	login := testLogin(t, portal)
+	alice := portal.Bridge.Matrix.GhostIntent("alice").(*testIntent)
+	for _, body := range []string{"v2", "v3"} {
+		if res := portal.sendConvertedEdit(ctx, login, msgID, "alice", editOf(partByID(t, portal, msgID, "1"), body), alice, time.Now(), 0); !res.Success {
+			t.Fatalf("edit = %+v", res)
+		}
+	}
+	v2 := id.EventID("$sent" + alice.sent[0].TransactionID)
+	want := map[id.EventID]bool{"$part0": true, "$part1": true, v2: true, partByID(t, portal, msgID, "1").MXID: true}
+	intents := func() []*testIntent {
+		all := []*testIntent{testBot(portal)}
+		for _, ghost := range portal.Bridge.Matrix.(testMatrix).ghosts {
+			all = append(all, ghost)
+		}
+		return all
+	}
+	for _, intent := range intents() {
+		intent.sent, intent.sentTypes, intent.contents = nil, nil, nil
+	}
+
+	if res := portal.handleRemoteMessageRemove(ctx, login, &simpleRemoteRemove{sender: EventSender{IsFromMe: true, Sender: "me"}}); !res.Success {
+		t.Fatalf("delete = %+v", res)
+	}
+	got := map[id.EventID]bool{}
+	for _, intent := range intents() {
+		for i, content := range intent.contents {
+			if redaction, ok := content.Parsed.(*event.RedactionEventContent); ok {
+				got[redaction.Redacts] = true
+			} else {
+				t.Fatalf("%s sent a %s on an own delete", intent.mxid, intent.sentTypes[i])
+			}
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("redacted %v, want every version %v", got, want)
+	}
+	for mxid := range want {
+		if !got[mxid] {
+			t.Fatalf("%s wasn't redacted; redacted %v", mxid, got)
+		}
+	}
+	if versions, err := portal.getEditVersions(ctx, msgID); err != nil || len(versions) != 0 {
+		t.Fatalf("kept versions after the delete = %v, %v", versions, err)
+	}
+	for _, mxid := range []id.EventID{"$part1", v2} {
+		if part, err := portal.getPartByMXIDOrVersion(ctx, mxid); err != nil || part != nil {
+			t.Fatalf("%s still resolves after the delete: %+v, %v", mxid, part, err)
+		}
+	}
+}
+
 // A Matrix reply or reaction to an earlier version reaches the remote
 // message: the version resolves to the message's current part. (A live
 // pilot reply to the original went out without its reply relation.)
