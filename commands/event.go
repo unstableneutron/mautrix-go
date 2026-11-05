@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/rs/zerolog"
 
@@ -106,12 +107,14 @@ func RawTextToEvent[MetaType any](ctx context.Context, evt *event.Event, text st
 	if len(parts) == 0 {
 		parts = []string{""}
 	}
+	rawArgs := strings.TrimLeftFunc(text, unicode.IsSpace)
+	rawArgs = strings.TrimLeftFunc(strings.TrimPrefix(rawArgs, parts[0]), unicode.IsSpace)
 	return &Event[MetaType]{
 		Event:    evt,
 		RawInput: text,
 		Command:  strings.ToLower(parts[0]),
 		Args:     parts[1:],
-		RawArgs:  strings.TrimLeft(strings.TrimPrefix(text, parts[0]), " "),
+		RawArgs:  rawArgs,
 		Log:      zerolog.Ctx(ctx),
 		Ctx:      ctx,
 	}
@@ -203,7 +206,7 @@ func (evt *Event[MetaType]) ShiftArg() string {
 		return ""
 	}
 	firstArg := evt.Args[0]
-	evt.RawArgs = strings.TrimLeft(strings.TrimPrefix(evt.RawArgs, evt.Args[0]), " ")
+	evt.RawArgs = strings.TrimLeftFunc(strings.TrimPrefix(evt.RawArgs, firstArg), unicode.IsSpace)
 	evt.Args = evt.Args[1:]
 	return firstArg
 }
