@@ -227,3 +227,35 @@ func TestRemoteEventCompletion(t *testing.T) {
 		})
 	}
 }
+
+type removeEvent struct {
+	RemoteEvent
+	sender EventSender
+}
+
+func (re removeEvent) GetSender() EventSender                { return re.sender }
+func (re removeEvent) GetTargetMessage() networkid.MessageID { return "msg" }
+
+// Networks that don't name the deleter: a delete of the user's own message
+// stays a real delete, anyone else's is kept.
+func TestShouldMarkRemoteDeleteUnknownDeleter(t *testing.T) {
+	portal, msgID := newTestPortal(t, RemoteDeletesMark)
+	source := &UserLogin{UserLogin: &database.UserLogin{UserMXID: "@me:example.com"}}
+	parts := loadParts(t, portal, msgID)
+	if !portal.shouldMarkRemoteDelete(removeEvent{}, source, parts) {
+		t.Error("someone else's message deleted by an unknown deleter wasn't kept")
+	}
+	for _, part := range parts {
+		part.SenderMXID = "@me:example.com"
+	}
+	if portal.shouldMarkRemoteDelete(removeEvent{}, source, parts) {
+		t.Error("the user's own message deleted by an unknown deleter was kept")
+	}
+	// A named deleter decides on its own: someone else deleting the user's message.
+	if !portal.shouldMarkRemoteDelete(removeEvent{sender: EventSender{Sender: "alice"}}, source, parts) {
+		t.Error("a delete by a named other user wasn't kept")
+	}
+	if portal.shouldMarkRemoteDelete(removeEvent{sender: EventSender{Sender: "me", IsFromMe: true}}, source, parts) {
+		t.Error("the user's own delete was kept")
+	}
+}
