@@ -82,6 +82,7 @@ bridge:
     # How a message kept by remote_deletes is marked. Both markers are sent by the bridge bot,
     # never by the person who deleted it, and neither is bridged back to the network.
     #   remote_delete_reaction - a 🗑️ reaction on the message (one per message, on its first part).
+    #                            While enabled, 🗑️ reactions sent from Matrix aren't bridged either.
     #   remote_delete_notice   - a "Deleted in <network>" notice replying to the message, sent only
     #                            when it can't be edited in place (the bridge can't read its own
     #                            encrypted events back once keys ratchet). It can still notify,
