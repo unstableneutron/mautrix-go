@@ -19,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -163,11 +164,18 @@ func (portal *Portal) sendRemoteDeleteMarkers(ctx context.Context, parts []*data
 		return fmt.Errorf("failed to ensure bot is in the room for deleted markers: %w", err)
 	}
 	if sendReaction {
-		// One 🗑️ on the message and one on each earlier version that
-		// remote_edits kept, since those are shown as separate messages.
+		// One 🗑️ on the message, and one on every version of a part that
+		// remote_edits split into separate messages: each kept earlier version
+		// (no row) and the part's newest version (its row).
+		versioned := make(map[networkid.PartID]bool)
+		for _, part := range parts {
+			if part.RowID == 0 {
+				versioned[part.PartID] = true
+			}
+		}
 		targets := []*database.Message{first}
 		for _, part := range parts {
-			if part.RowID == 0 && part != first && !part.HasFakeMXID() {
+			if part != first && !part.HasFakeMXID() && versioned[part.PartID] {
 				targets = append(targets, part)
 			}
 		}
