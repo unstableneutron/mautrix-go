@@ -70,19 +70,22 @@ func (portal *Portal) shouldMarkRemoteDelete(evt RemoteMessageRemove) bool {
 // markMessageParts edits every part of a message deleted on the remote
 // network to its last content plus a visible marker. A part whose content
 // can't be read back, such as when the bridge ratchets its keys on decrypt,
-// is left untouched and the message gets a marker reply instead, after which
-// the message's rows are deleted so a repeated delete is a no-op.
+// is left untouched. The bridge bot then marks the message with a 🗑️ reaction
+// (bridge.remote_delete_reaction) and a marker reply
+// (bridge.remote_delete_notice), each optional; after an unreadable part the
+// message's rows are deleted so a repeated delete is a no-op.
 //
-// Any send or database error fails the result and skips the reply and the row
-// deletion, so the rows stay for a retry. Every send uses a transaction ID
-// derived from the message part, so a retry can't duplicate an edit or reply,
-// and parts already marked are skipped.
+// Any send or database error fails the result and skips the steps after it,
+// including the row deletion, so the rows stay for a retry. Every send uses a
+// transaction ID derived from the message part, so a retry can't duplicate an
+// edit, reaction or reply, and parts already marked are skipped.
 func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Message, intent MatrixAPI, ts time.Time) EventHandlingResult {
 	log := zerolog.Ctx(ctx)
 	// Networks often stamp a delete with the message's own time, so the marker carries none.
 	marker := "🗑 Deleted in " + portal.Bridge.Network.GetName().DisplayName
 	var errorList []error
 	var unreadable *database.Message
+	edited := false
 	for _, part := range parts {
 		if part.HasFakeMXID() {
 			continue
@@ -95,6 +98,8 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 			}
 			continue
 		} else if content == nil {
+			// Marked by an earlier attempt, which may have failed before its markers.
+			edited = true
 			continue
 		}
 		wrapped := &event.Content{Parsed: content, Raw: map[string]any{remoteDeletedKey: true}}
@@ -106,25 +111,20 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 			errorList = append(errorList, fmt.Errorf("failed to mark part %q deleted: %w", part.PartID, err))
 			continue
 		}
+		edited = true
 		part.EditCount++
 		if err = portal.Bridge.DB.Message.Update(ctx, part); err != nil {
 			log.Err(err).Stringer("part_mxid", part.MXID).Msg("Failed to save marked message part")
 			errorList = append(errorList, fmt.Errorf("failed to save marked part %q: %w", part.PartID, err))
 		}
 	}
-	if unreadable != nil && len(errorList) == 0 {
-		notice := &event.MessageEventContent{
-			MsgType:   event.MsgNotice,
-			Body:      marker + ". Kept here as it was.",
-			Mentions:  &event.Mentions{},
-			RelatesTo: (&event.RelatesTo{}).SetReplyTo(unreadable.MXID),
+	if len(errorList) == 0 && (edited || unreadable != nil) {
+		if err := portal.sendRemoteDeleteMarkers(ctx, parts, unreadable, marker, ts); err != nil {
+			errorList = append(errorList, err)
 		}
-		_, err := intent.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{Parsed: notice}, &MatrixSendExtra{
-			Timestamp: ts, TransactionID: remoteDeleteTxnID("notice", unreadable),
-		})
-		if err != nil {
-			errorList = append(errorList, fmt.Errorf("failed to send deleted marker: %w", err))
-		} else if err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, unreadable.ID); err != nil {
+	}
+	if unreadable != nil && len(errorList) == 0 {
+		if err := portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, unreadable.ID); err != nil {
 			errorList = append(errorList, fmt.Errorf("failed to forget kept message: %w", err))
 		}
 	}
@@ -132,6 +132,78 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 		return EventHandlingResultFailed.WithError(errors.Join(errorList...))
 	}
 	return EventHandlingResultSuccess
+}
+
+// sendRemoteDeleteMarkers sends the bot's 🗑️ reaction to the message's first
+// part and, when a part couldn't be edited, its marker reply, as configured.
+// They come from the bridge bot so they aren't attributed to whoever deleted
+// the message, and carry remoteDeletedKey so they are never bridged back.
+func (portal *Portal) sendRemoteDeleteMarkers(ctx context.Context, parts []*database.Message, unreadable *database.Message, marker string, ts time.Time) error {
+	cfg := portal.Bridge.Config
+	sendNotice := unreadable != nil && cfg.RemoteDeleteNotice
+	first := firstRealPart(parts)
+	sendReaction := cfg.RemoteDeleteReaction && first != nil
+	if !sendNotice && !sendReaction {
+		return nil
+	}
+	bot := portal.Bridge.Bot
+	if err := bot.EnsureJoined(ctx, portal.MXID); err != nil {
+		return fmt.Errorf("failed to ensure bot is in the room for deleted markers: %w", err)
+	}
+	if sendReaction {
+		reaction := &event.Content{
+			Parsed: &event.ReactionEventContent{RelatesTo: event.RelatesTo{
+				Type: event.RelAnnotation, EventID: first.MXID, Key: RemoteDeleteReactionKey,
+			}},
+			Raw: map[string]any{remoteDeletedKey: true},
+		}
+		_, err := bot.SendMessage(ctx, portal.MXID, event.EventReaction, reaction, &MatrixSendExtra{
+			Timestamp: ts, TransactionID: remoteDeleteTxnID("reaction", first),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to send deleted reaction: %w", err)
+		}
+	}
+	if sendNotice {
+		notice := &event.Content{
+			Parsed: &event.MessageEventContent{
+				MsgType:   event.MsgNotice,
+				Body:      marker + ". Kept here as it was.",
+				Mentions:  &event.Mentions{},
+				RelatesTo: (&event.RelatesTo{}).SetReplyTo(unreadable.MXID),
+			},
+			Raw: map[string]any{remoteDeletedKey: true},
+		}
+		_, err := bot.SendMessage(ctx, portal.MXID, event.EventMessage, notice, &MatrixSendExtra{
+			Timestamp: ts, TransactionID: remoteDeleteTxnID("notice", unreadable),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to send deleted marker: %w", err)
+		}
+	}
+	return nil
+}
+
+// RemoteDeleteReactionKey is the reaction the bridge bot puts on a kept message.
+const RemoteDeleteReactionKey = "🗑️"
+
+// firstRealPart returns the part a message's single reaction goes on: the one
+// with the lowest part ID, which connectors use for the message's main part.
+func firstRealPart(parts []*database.Message) *database.Message {
+	var first *database.Message
+	for _, part := range parts {
+		if !part.HasFakeMXID() && (first == nil || part.PartID < first.PartID) {
+			first = part
+		}
+	}
+	return first
+}
+
+// isRemoteDeleteMarker reports whether a Matrix event is one of the markers
+// the bridge sent for a kept remote delete, which must never be bridged.
+func isRemoteDeleteMarker(evt *event.Event) bool {
+	_, ok := evt.Content.Raw[remoteDeletedKey]
+	return ok
 }
 
 // remoteDeleteTxnID is the Matrix transaction ID of a kept-delete send for a
