@@ -95,6 +95,16 @@ bridge:
     # kept without any marker.
     remote_delete_notice: true
     remote_delete_reaction: true
+    # How edits made on the remote network are bridged.
+    #   replace            - Edit the Matrix message in place. Clients show only the newest version.
+    #   new_message_others - Edits by other people are sent as a new message replying to the
+    #                        previous version, which stays as it was and gets a ✏️ reaction from the
+    #                        bridge bot (never bridged back), so every version stays readable. Your
+    #                        own edits replace in place, and parts an edit removes stay as they were.
+    #                        Each version is a new message and can notify.
+    #                        Reactions, replies and deletes from the network apply to the newest
+    #                        version; earlier versions are no longer linked to the remote message.
+    remote_edits: new_message_others
 
     # What should be done to portal rooms when a user logs out or is logged out?
     # Permitted values:

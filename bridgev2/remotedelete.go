@@ -104,7 +104,14 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 		if part.HasFakeMXID() {
 			continue
 		}
-		content, err := portal.latestPartContent(ctx, intent, part, marker)
+		// The edit only applies when it comes from the part's own sender.
+		partIntent := intent
+		if senderIntent, err := portal.getIntentForMXID(ctx, part.SenderMXID); err != nil {
+			log.Warn().Err(err).Stringer("sender_mxid", part.SenderMXID).Msg("Failed to get intent of deleted part's sender")
+		} else if senderIntent != nil {
+			partIntent = senderIntent
+		}
+		content, err := portal.latestPartContent(ctx, partIntent, part, marker)
 		if err != nil {
 			log.Warn().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't read deleted message part back, leaving it untouched")
 			if unreadable == nil {
@@ -117,7 +124,7 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 			continue
 		}
 		wrapped := &event.Content{Parsed: content, Raw: map[string]any{remoteDeletedKey: true}}
-		_, err = intent.SendMessage(ctx, portal.MXID, event.EventMessage, wrapped, &MatrixSendExtra{
+		_, err = partIntent.SendMessage(ctx, portal.MXID, event.EventMessage, wrapped, &MatrixSendExtra{
 			Timestamp: ts, MessageMeta: part, TransactionID: remoteDeleteTxnID("edit", part),
 		})
 		if err != nil {
@@ -214,10 +221,12 @@ func firstRealPart(parts []*database.Message) *database.Message {
 }
 
 // isRemoteDeleteMarker reports whether a Matrix event is one of the markers
-// the bridge sent for a kept remote delete, which must never be bridged.
+// the bridge sent for a kept remote delete or a kept edit version, which must
+// never be bridged.
 func isRemoteDeleteMarker(evt *event.Event) bool {
-	_, ok := evt.Content.Raw[remoteDeletedKey]
-	return ok
+	_, deleted := evt.Content.Raw[remoteDeletedKey]
+	_, edited := evt.Content.Raw[remoteEditedKey]
+	return deleted || edited
 }
 
 // remoteDeleteTxnID is the Matrix transaction ID of a kept-delete send for a
@@ -238,11 +247,11 @@ func (portal *Portal) latestPartContent(ctx context.Context, intent MatrixAPI, p
 	if !ok || evt.Type != event.EventMessage {
 		return nil, errors.New("not a message event")
 	}
-	if part.EditCount > 0 {
-		lookup, ok := intent.(MatrixAPIWithEditLookup)
-		if !ok {
-			return nil, errors.New("can't look up the newest edit")
-		}
+	// Not every connector counts remote edits, so look for one even when
+	// EditCount is 0; only a counted edit requires the lookup.
+	if lookup, ok := intent.(MatrixAPIWithEditLookup); !ok && part.EditCount > 0 {
+		return nil, errors.New("can't look up the newest edit")
+	} else if ok {
 		edit, err := lookup.GetLatestEdit(ctx, portal.MXID, part.MXID)
 		if err != nil {
 			return nil, err

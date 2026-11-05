@@ -3394,13 +3394,45 @@ func (portal *Portal) sendConvertedEdit(
 	log := zerolog.Ctx(ctx)
 	var errorList []error
 	updatedParts := make([]*database.Message, 0, len(converted.ModifiedParts))
+	// With bridge.remote_edits: new_message_others, other people's edits are
+	// sent as new messages and the previous versions stay. The bot marks the
+	// first superseded part with ✏️ before anything else is sent, so a failed
+	// edit stops early and a retry repeats the same transaction IDs.
+	var reactionTarget *database.Message
+	for _, part := range converted.ModifiedParts {
+		if part.Part.Room == portal.PortalKey && !part.DontBridge && portal.keepEditVersion(ctx, source, senderID, part.Part) &&
+			(reactionTarget == nil || part.Part.PartID < reactionTarget.PartID) {
+			reactionTarget = part.Part
+		}
+	}
+	for _, part := range converted.DeletedParts {
+		if portal.keepEditVersion(ctx, source, senderID, part) && (reactionTarget == nil || part.PartID < reactionTarget.PartID) {
+			reactionTarget = part
+		}
+	}
+	if reactionTarget != nil {
+		if err := portal.sendRemoteEditReaction(ctx, reactionTarget.MXID, ts); err != nil {
+			log.Err(err).Stringer("part_mxid", reactionTarget.MXID).Msg("Failed to mark superseded message version")
+			return EventHandlingResultFailed.WithError(err)
+		}
+	}
 	for i, part := range converted.ModifiedParts {
 		if part.Content.Mentions == nil {
 			part.Content.Mentions = &event.Mentions{}
 		}
 		overrideMXID := true
+		var txnID string
 		if part.Part.Room != portal.PortalKey {
 			part.Part.Room = portal.PortalKey
+		} else if reactionTarget != nil && !part.DontBridge && portal.keepEditVersion(ctx, source, senderID, part.Part) {
+			// A new version replying to the one it supersedes; edits don't ping.
+			if part.Content.RelatesTo == nil {
+				part.Content.RelatesTo = &event.RelatesTo{}
+			}
+			part.Content.RelatesTo.SetReplyTo(part.Part.MXID)
+			part.Content.Mentions = &event.Mentions{}
+			txnID = remoteEditTxnID("version", part.Part.MXID)
+			part.Part.EditCount = 0
 		} else if !part.Part.HasFakeMXID() {
 			part.Content.SetEdit(part.Part.MXID)
 			overrideMXID = false
@@ -3413,7 +3445,11 @@ func (portal *Portal) sendConvertedEdit(
 		if part.TopLevelExtra == nil {
 			part.TopLevelExtra = make(map[string]any)
 		}
-		if part.Extra != nil {
+		if part.Extra != nil && txnID != "" {
+			for key, value := range part.Extra {
+				part.TopLevelExtra[key] = value
+			}
+		} else if part.Extra != nil {
 			part.TopLevelExtra["m.new_content"] = part.Extra
 		}
 		wrappedContent := &event.Content{
@@ -3422,10 +3458,11 @@ func (portal *Portal) sendConvertedEdit(
 		}
 		if !part.DontBridge {
 			resp, err := intent.SendMessage(ctx, portal.MXID, part.Type, wrappedContent, &MatrixSendExtra{
-				Timestamp:   ts,
-				MessageMeta: part.Part,
-				StreamOrder: streamOrder,
-				PartIndex:   i,
+				Timestamp:     ts,
+				MessageMeta:   part.Part,
+				StreamOrder:   streamOrder,
+				PartIndex:     i,
+				TransactionID: txnID,
 			})
 			if err != nil {
 				log.Err(err).Stringer("part_mxid", part.Part.MXID).Msg("Failed to edit message part")
@@ -3445,6 +3482,11 @@ func (portal *Portal) sendConvertedEdit(
 	}
 	deletedParts := make([]int64, 0, len(converted.DeletedParts))
 	for _, part := range converted.DeletedParts {
+		if portal.keepEditVersion(ctx, source, senderID, part) {
+			// The removed part stays as an earlier version; only its row goes.
+			deletedParts = append(deletedParts, part.RowID)
+			continue
+		}
 		redactContent := &event.Content{
 			Parsed: &event.RedactionEventContent{
 				Redacts: part.MXID,

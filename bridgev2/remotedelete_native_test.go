@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,9 @@ type testClient struct {
 }
 
 func (*testClient) IsLoggedIn() bool { return true }
+func (*testClient) IsThisUser(_ context.Context, userID networkid.UserID) bool {
+	return userID == "me"
+}
 func (*testClient) GetCapabilities(context.Context, *Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{}
 }
@@ -66,7 +70,20 @@ func (*testClient) HandleMatrixReactionRemove(context.Context, *MatrixReactionRe
 
 type testMatrix struct {
 	MatrixConnector
-	bot MatrixAPI
+	bot    MatrixAPI
+	ghosts map[networkid.UserID]*testIntent
+}
+
+func (tm testMatrix) ParseGhostMXID(userID id.UserID) (networkid.UserID, bool) {
+	localpart, ok := strings.CutPrefix(strings.TrimSuffix(string(userID), ":example.com"), "@ghost_")
+	return networkid.UserID(localpart), ok
+}
+
+func (tm testMatrix) GhostIntent(userID networkid.UserID) MatrixAPI {
+	if tm.ghosts[userID] == nil {
+		tm.ghosts[userID] = &testIntent{mxid: id.UserID("@ghost_" + string(userID) + ":example.com")}
+	}
+	return tm.ghosts[userID]
 }
 
 func (testMatrix) Init(*Bridge)                                                               {}
@@ -136,9 +153,10 @@ func newTestPortal(t *testing.T, mode string) (*Portal, networkid.MessageID) {
 		RemoteDeletes:        mode,
 		RemoteDeleteNotice:   true,
 		RemoteDeleteReaction: true,
+		RemoteEdits:          RemoteEditsNewMessageOthers,
 		Permissions:          bridgeconfig.PermissionConfig{"*": &bridgeconfig.PermissionLevelUser},
 	}
-	matrix := testMatrix{bot: &testIntent{mxid: testBotMXID}}
+	matrix := testMatrix{bot: &testIntent{mxid: testBotMXID}, ghosts: map[networkid.UserID]*testIntent{}}
 	br := NewBridge("test", db, zerolog.Nop(), cfg, matrix, testNetwork{client: &testClient{}}, func(*Bridge) CommandProcessor { return nil })
 	br.BackgroundCtx = ctx
 	if err = br.DB.Upgrade(ctx); err != nil {
@@ -456,6 +474,8 @@ func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 		{"bot reaction without the flag", testBotMXID, trash, nil},
 		{"flagged reaction from the user", testUserMXID, "👍", flagged},
 		{"user tapping the 🗑️ chip", testUserMXID, trash, nil},
+		{"edited flag from the user", testUserMXID, "👍", map[string]any{remoteEditedKey: true}},
+		{"bot ✏️ echo", testBotMXID, RemoteEditReactionKey, map[string]any{remoteEditedKey: true}},
 	} {
 		if res := queue(tc.sender, tc.key, tc.raw, i); !res.Ignored {
 			t.Errorf("%s: result = %+v, want it ignored", tc.name, res)

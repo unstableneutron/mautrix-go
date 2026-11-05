@@ -95,6 +95,7 @@ type BridgeConfig struct {
 	RemoteDeletes                 string             `yaml:"remote_deletes"`
 	RemoteDeleteNotice            bool               `yaml:"remote_delete_notice"`
 	RemoteDeleteReaction          bool               `yaml:"remote_delete_reaction"`
+	RemoteEdits                   string             `yaml:"remote_edits"`
 	CleanupOnLogout               CleanupOnLogouts   `yaml:"cleanup_on_logout"`
 	Relay                         RelayConfig        `yaml:"relay"`
 	PortalCreateFilter            PortalCreateFilter `yaml:"portal_create_filter"`
