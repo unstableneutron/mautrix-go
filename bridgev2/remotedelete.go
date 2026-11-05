@@ -119,6 +119,9 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 			continue
 		}
 		edited = true
+		if part.RowID == 0 {
+			continue // a kept edit version has no row
+		}
 		part.EditCount++
 		if err = portal.Bridge.DB.Message.Update(ctx, part); err != nil {
 			log.Err(err).Stringer("part_mxid", part.MXID).Msg("Failed to save marked message part")
@@ -133,6 +136,8 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 	if unreadable != nil && len(errorList) == 0 {
 		if err := portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, unreadable.ID); err != nil {
 			errorList = append(errorList, fmt.Errorf("failed to forget kept message: %w", err))
+		} else if err = portal.deleteEditVersions(ctx, unreadable.ID); err != nil {
+			errorList = append(errorList, err)
 		}
 	}
 	if len(errorList) > 0 {
@@ -158,17 +163,27 @@ func (portal *Portal) sendRemoteDeleteMarkers(ctx context.Context, parts []*data
 		return fmt.Errorf("failed to ensure bot is in the room for deleted markers: %w", err)
 	}
 	if sendReaction {
-		reaction := &event.Content{
-			Parsed: &event.ReactionEventContent{RelatesTo: event.RelatesTo{
-				Type: event.RelAnnotation, EventID: first.MXID, Key: RemoteDeleteReactionKey,
-			}},
-			Raw: map[string]any{remoteDeletedKey: true},
+		// One 🗑️ on the message and one on each earlier version that
+		// remote_edits kept, since those are shown as separate messages.
+		targets := []*database.Message{first}
+		for _, part := range parts {
+			if part.RowID == 0 && part != first && !part.HasFakeMXID() {
+				targets = append(targets, part)
+			}
 		}
-		_, err := bot.SendMessage(ctx, portal.MXID, event.EventReaction, reaction, &MatrixSendExtra{
-			Timestamp: ts, TransactionID: remoteDeleteTxnID("reaction", first),
-		})
-		if err != nil {
-			return fmt.Errorf("failed to send deleted reaction: %w", err)
+		for _, target := range targets {
+			reaction := &event.Content{
+				Parsed: &event.ReactionEventContent{RelatesTo: event.RelatesTo{
+					Type: event.RelAnnotation, EventID: target.MXID, Key: RemoteDeleteReactionKey,
+				}},
+				Raw: map[string]any{remoteDeletedKey: true},
+			}
+			_, err := bot.SendMessage(ctx, portal.MXID, event.EventReaction, reaction, &MatrixSendExtra{
+				Timestamp: ts, TransactionID: remoteDeleteTxnID("reaction", target),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to send deleted reaction: %w", err)
+			}
 		}
 	}
 	if sendNotice {
@@ -195,11 +210,16 @@ func (portal *Portal) sendRemoteDeleteMarkers(ctx context.Context, parts []*data
 const RemoteDeleteReactionKey = "🗑️"
 
 // firstRealPart returns the part a message's single reaction goes on: the one
-// with the lowest part ID, which connectors use for the message's main part.
+// with the lowest part ID, which connectors use for the message's main part,
+// in its newest version (a part with a row) when there is one.
 func firstRealPart(parts []*database.Message) *database.Message {
 	var first *database.Message
 	for _, part := range parts {
-		if !part.HasFakeMXID() && (first == nil || part.PartID < first.PartID) {
+		if part.HasFakeMXID() {
+			continue
+		}
+		hasRow, firstHasRow := part.RowID != 0, first != nil && first.RowID != 0
+		if first == nil || (hasRow && !firstHasRow) || (hasRow == firstHasRow && part.PartID < first.PartID) {
 			first = part
 		}
 	}
@@ -218,7 +238,7 @@ func isRemoteDeleteMarker(evt *event.Event) bool {
 // remoteDeleteTxnID is the Matrix transaction ID of a kept-delete send for a
 // message part, the same on every retry.
 func remoteDeleteTxnID(kind string, part *database.Message) string {
-	sum := sha256.Sum256([]byte(string(part.Room.ID) + "\x00" + string(part.Room.Receiver) + "\x00" + string(part.ID) + "\x00" + string(part.PartID)))
+	sum := sha256.Sum256([]byte(string(part.Room.ID) + "\x00" + string(part.Room.Receiver) + "\x00" + string(part.ID) + "\x00" + string(part.PartID) + "\x00" + string(part.MXID)))
 	return "mau-remote-delete-" + kind + "-" + hex.EncodeToString(sum[:16])
 }
 

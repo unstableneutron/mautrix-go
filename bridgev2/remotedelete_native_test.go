@@ -243,8 +243,8 @@ func TestMarkMessagePartsMixedFailureThenRetry(t *testing.T) {
 	// The same part gets the same transaction ID on another attempt, so the
 	// homeserver deduplicates a resend; edit, reaction and reply IDs differ.
 	editTxn, reactionTxn, noticeTxn := ghost.sent[0].TransactionID, bot.sent[0].TransactionID, bot.sent[1].TransactionID
-	part0 := &database.Message{ID: msgID, PartID: "0", Room: portal.PortalKey}
-	part1 := &database.Message{ID: msgID, PartID: "1", Room: portal.PortalKey}
+	part0 := &database.Message{ID: msgID, PartID: "0", MXID: "$part0", Room: portal.PortalKey}
+	part1 := &database.Message{ID: msgID, PartID: "1", MXID: "$part1", Room: portal.PortalKey}
 	if editTxn != remoteDeleteTxnID("edit", part0) || reactionTxn != remoteDeleteTxnID("reaction", part0) || noticeTxn != remoteDeleteTxnID("notice", part1) {
 		t.Fatalf("transaction IDs edit=%q reaction=%q notice=%q aren't stable per part", editTxn, reactionTxn, noticeTxn)
 	}
@@ -447,7 +447,9 @@ type simpleRemoteRemove struct {
 	sender EventSender
 }
 
-func (s *simpleRemoteRemove) GetSender() EventSender { return s.sender }
+func (s *simpleRemoteRemove) GetSender() EventSender                { return s.sender }
+func (s *simpleRemoteRemove) GetTargetMessage() networkid.MessageID { return "msg" }
+func (s *simpleRemoteRemove) GetType() RemoteEventType              { return RemoteEventMessageRemove }
 
 // The bot's marker reaction must never reach the network's reaction API: not
 // its echo, not a retried echo, not flagged content sent by someone else, and
@@ -494,6 +496,7 @@ func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 		{"user tapping the 🗑️ chip", testUserMXID, trash, nil},
 		{"edited flag from the user", testUserMXID, "👍", map[string]any{remoteEditedKey: true}},
 		{"bot ✏️ echo", testBotMXID, RemoteEditReactionKey, map[string]any{remoteEditedKey: true}},
+		{"user tapping the ✏️ chip", testUserMXID, RemoteEditReactionKey, nil},
 	} {
 		if res := queue(tc.sender, tc.key, tc.raw, i); !res.Ignored {
 			t.Errorf("%s: result = %+v, want it ignored", tc.name, res)
@@ -508,13 +511,16 @@ func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
 	if len(client.reactions) != 1 || client.reactions[0] != "👍" {
 		t.Fatalf("network got %v, want the user's own 👍", client.reactions)
 	}
-	// With the reaction marker off, 🗑️ is an ordinary reaction again.
+	// With the markers off, 🗑️ and ✏️ are ordinary reactions again.
 	portal.Bridge.Config.RemoteDeleteReaction = false
-	if res := queue(testUserMXID, trash, nil, 100); !res.Success || res.Ignored {
-		t.Fatalf("🗑️ with the marker off: result = %+v", res)
+	portal.Bridge.Config.RemoteEdits = RemoteEditsReplace
+	for i, key := range []string{trash, RemoteEditReactionKey} {
+		if res := queue(testUserMXID, key, nil, 100+i); !res.Success || res.Ignored {
+			t.Fatalf("%s with the markers off: result = %+v", key, res)
+		}
 	}
-	if len(client.reactions) != 2 || client.reactions[1] != trash {
-		t.Fatalf("network got %v, want the user's 🗑️ with the marker off", client.reactions)
+	if len(client.reactions) != 3 || client.reactions[1] != trash || client.reactions[2] != RemoteEditReactionKey {
+		t.Fatalf("network got %v, want the user's 🗑️ and ✏️ with the markers off", client.reactions)
 	}
 }
 

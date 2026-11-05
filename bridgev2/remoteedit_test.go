@@ -219,3 +219,62 @@ func TestRemoteEditKeepsRemovedPart(t *testing.T) {
 		t.Fatalf("rows = %+v, want only part 1", parts)
 	}
 }
+
+// Two edits by someone else keep two earlier versions of part 1. When they
+// delete the message, every version is kept and gets its own 🗑️; with
+// remote_deletes: redact every version is redacted. Either way the kept
+// version list is forgotten with the message.
+func TestRemoteDeleteCoversEditVersions(t *testing.T) {
+	for _, mode := range []string{RemoteDeletesMark, RemoteDeletesRedact} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := zerolog.Nop().WithContext(context.Background())
+			portal, msgID := newTestPortal(t, mode)
+			login, bot := testLogin(t, portal), testBot(portal)
+			alice := portal.Bridge.Matrix.GhostIntent("alice").(*testIntent)
+			for _, body := range []string{"v2", "v3"} {
+				if res := portal.sendConvertedEdit(ctx, login, msgID, "alice", editOf(partByID(t, portal, msgID, "1"), body), alice, time.Now(), 0); !res.Success {
+					t.Fatalf("edit = %+v", res)
+				}
+			}
+			newest := partByID(t, portal, msgID, "1").MXID
+			v2 := alice.sent[0].TransactionID
+			want := map[id.EventID]bool{"$part0": true, newest: true, "$part1": true, id.EventID("$sent" + v2): true}
+			bot.sent, bot.sentTypes, bot.contents = nil, nil, nil
+			alice.sent, alice.sentTypes, alice.contents = nil, nil, nil
+
+			if res := portal.handleRemoteMessageRemove(ctx, login, &simpleRemoteRemove{sender: EventSender{Sender: "alice"}}); !res.Success {
+				t.Fatalf("delete = %+v", res)
+			}
+			got := map[id.EventID]bool{}
+			if mode == RemoteDeletesMark {
+				for i, kind := range bot.sentTypes {
+					if kind == "reaction" {
+						got[bot.contents[i].Parsed.(*event.ReactionEventContent).RelatesTo.EventID] = true
+					}
+				}
+				for _, content := range alice.contents {
+					if _, ok := content.Parsed.(*event.RedactionEventContent); ok {
+						t.Fatal("a version was redacted under mark")
+					}
+				}
+			} else {
+				for _, content := range alice.contents {
+					if redaction, ok := content.Parsed.(*event.RedactionEventContent); ok {
+						got[redaction.Redacts] = true
+					}
+				}
+			}
+			if len(got) != len(want) {
+				t.Fatalf("%s reached %v, want every version %v", mode, got, want)
+			}
+			for mxid := range want {
+				if !got[mxid] {
+					t.Fatalf("%s missed %s; reached %v", mode, mxid, got)
+				}
+			}
+			if versions, err := portal.getEditVersions(ctx, msgID); err != nil || len(versions) != 0 {
+				t.Fatalf("kept versions after the delete = %v, %v", versions, err)
+			}
+		})
+	}
+}
