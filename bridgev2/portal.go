@@ -550,7 +550,9 @@ func (portal *Portal) handleSingleEvent(ctx context.Context, rawEvt any, doneCal
 	var res EventHandlingResult
 	defer func() {
 		doneCallback(res)
+		completed := res
 		if err := recover(); err != nil {
+			completed = EventHandlingResultFailed.WithError(fmt.Errorf("%w: %v", ErrPanicInEventHandler, err))
 			logEvt := log.Error()
 			var errorString string
 			if realErr, ok := err.(error); ok {
@@ -574,6 +576,11 @@ func (portal *Portal) handleSingleEvent(ctx context.Context, rawEvt any, doneCal
 			portal.Bridge.TrackAnalytics("", "Bridge Event Handler Panic", map[string]any{
 				"error": errorString,
 			})
+		}
+		if remoteEvt, ok := rawEvt.(*portalRemoteEvent); ok {
+			if completion, ok := remoteEvt.evt.(RemoteEventWithCompletion); ok {
+				completion.HandleCompleted(ctx, completed)
+			}
 		}
 	}()
 	switch evt := rawEvt.(type) {
