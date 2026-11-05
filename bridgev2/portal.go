@@ -578,8 +578,10 @@ func (portal *Portal) handleSingleEvent(ctx context.Context, rawEvt any, doneCal
 	var res EventHandlingResult
 	defer func() {
 		doneCallback(res)
+		completed := res
 		if v := recover(); v != nil {
 			err := exerrors.RecoverToError(v)
+			completed = EventHandlingResultFailed.WithError(fmt.Errorf("%w: %w", ErrPanicInEventHandler, err))
 			stack := debug.Stack()
 			log.Err(err).
 				Bytes(zerolog.ErrorStackFieldName, stack).
@@ -597,6 +599,11 @@ func (portal *Portal) handleSingleEvent(ctx context.Context, rawEvt any, doneCal
 				"stack":        string(stack),
 				"handler_type": fmt.Sprintf("%T", rawEvt),
 			})
+		}
+		if remoteEvt, ok := rawEvt.(*portalRemoteEvent); ok {
+			if completion, ok := remoteEvt.evt.(RemoteEventWithCompletion); ok {
+				completion.HandleCompleted(ctx, completed)
+			}
 		}
 	}()
 	switch evt := rawEvt.(type) {
