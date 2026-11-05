@@ -53,6 +53,7 @@ func doUpgrade(helper up.Helper) {
 	helper.Copy(up.Str, "bridge", "remote_deletes")
 	helper.Copy(up.Bool, "bridge", "remote_delete_notice")
 	helper.Copy(up.Bool, "bridge", "remote_delete_reaction")
+	helper.Copy(up.Str, "bridge", "remote_edits")
 	helper.Copy(up.Bool, "bridge", "cleanup_on_logout", "enabled")
 	helper.Copy(up.Str, "bridge", "cleanup_on_logout", "manual", "private")
 	helper.Copy(up.Str, "bridge", "cleanup_on_logout", "manual", "relayed")
