@@ -85,6 +85,8 @@ type testMatrix struct {
 	MatrixConnector
 	bot    MatrixAPI
 	ghosts map[networkid.UserID]*testIntent
+	// user, when set, is the user's double puppet.
+	user *testIntent
 }
 
 func (tm testMatrix) ParseGhostMXID(userID id.UserID) (networkid.UserID, bool) {
@@ -100,8 +102,11 @@ func (tm testMatrix) GhostIntent(userID networkid.UserID) MatrixAPI {
 }
 
 // NewUserIntent fails like a bridge without double puppeting, so the user's own
-// events fall back to their ghost.
-func (testMatrix) NewUserIntent(context.Context, id.UserID, string) (MatrixAPI, string, error) {
+// events fall back to their ghost, unless the test set a double puppet.
+func (tm testMatrix) NewUserIntent(_ context.Context, _ id.UserID, token string) (MatrixAPI, string, error) {
+	if tm.user != nil {
+		return tm.user, token, nil
+	}
 	return nil, "", errors.New("double puppeting is not configured")
 }
 
