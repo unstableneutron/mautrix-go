@@ -74,6 +74,12 @@ func (br *Bridge) QueueMatrixEvent(ctx context.Context, evt *event.Event) EventH
 	// TODO maybe HandleMatrixEvent would be more appropriate as this also handles bot invites and commands
 
 	log := zerolog.Ctx(ctx)
+	// The markers of a kept remote delete, and the bot's other own events
+	// (except tombstones, which portals handle), are never bridged, even if the
+	// Matrix connector didn't filter them.
+	if isRemoteDeleteMarker(evt) || (br.Bot != nil && evt.Sender == br.Bot.GetMXID() && evt.Type != event.StateTombstone) {
+		return EventHandlingResultIgnored
+	}
 	var sender *User
 	if evt.Sender != "" {
 		var err error
