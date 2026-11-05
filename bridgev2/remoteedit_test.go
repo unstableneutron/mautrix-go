@@ -275,6 +275,39 @@ func TestRemoteDeleteCoversEditVersions(t *testing.T) {
 			if versions, err := portal.getEditVersions(ctx, msgID); err != nil || len(versions) != 0 {
 				t.Fatalf("kept versions after the delete = %v, %v", versions, err)
 			}
+			if part, err := portal.getPartByMXIDOrVersion(ctx, "$part1"); err != nil || part != nil {
+				t.Fatalf("old version still resolves after the delete: %+v, %v", part, err)
+			}
 		})
+	}
+}
+
+// A Matrix reply or reaction to an earlier version reaches the remote
+// message: the version resolves to the message's current part. (A live
+// pilot reply to the original went out without its reply relation.)
+func TestEditVersionResolvesForRepliesAndReactions(t *testing.T) {
+	ctx := zerolog.Nop().WithContext(context.Background())
+	portal, msgID := newTestPortal(t, RemoteDeletesMark)
+	login := testLogin(t, portal)
+	if res := portal.sendConvertedEdit(ctx, login, msgID, "alice", editOf(partByID(t, portal, msgID, "1"), "v2"), &testIntent{}, time.Now(), 0); !res.Success {
+		t.Fatalf("edit = %+v", res)
+	}
+	current := partByID(t, portal, msgID, "1")
+	got, err := portal.getPartByMXIDOrVersion(ctx, "$part1")
+	if err != nil || got == nil || got.ID != msgID || got.PartID != "1" || got.MXID != current.MXID {
+		t.Fatalf("old version resolved to %+v, %v; want the current part 1 (%s)", got, err, current.MXID)
+	}
+	if got, _ = portal.getPartByMXIDOrVersion(ctx, "$unknown"); got != nil {
+		t.Fatalf("unknown event resolved to %+v", got)
+	}
+	client := portal.Bridge.Network.(testNetwork).client
+	res := portal.Bridge.QueueMatrixEvent(ctx, &event.Event{
+		ID: "$thumbs", RoomID: portal.MXID, Sender: testUserMXID, Type: event.EventReaction, Timestamp: 3000,
+		Content: event.Content{Parsed: &event.ReactionEventContent{RelatesTo: event.RelatesTo{
+			Type: event.RelAnnotation, EventID: "$part1", Key: "👍",
+		}}},
+	})
+	if !res.Success || res.Ignored || len(client.reactions) != 1 {
+		t.Fatalf("reaction on the old version = %+v, network got %v", res, client.reactions)
 	}
 }
