@@ -51,6 +51,10 @@ type testClient struct {
 }
 
 func (*testClient) IsLoggedIn() bool { return true }
+
+// GetUserInfo has nothing to add, so a remote event's ghost keeps the info the
+// test gave it.
+func (*testClient) GetUserInfo(context.Context, *Ghost) (*UserInfo, error) { return nil, nil }
 func (*testClient) IsThisUser(_ context.Context, userID networkid.UserID) bool {
 	return userID == "me"
 }
