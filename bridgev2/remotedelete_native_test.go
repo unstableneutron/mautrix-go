@@ -61,6 +61,9 @@ func (tc *testClient) HandleMatrixReaction(_ context.Context, msg *MatrixReactio
 	tc.reactions = append(tc.reactions, msg.Content.RelatesTo.Key)
 	return &database.Reaction{}, nil
 }
+func (*testClient) HandleMatrixReactionRemove(context.Context, *MatrixReactionRemove) error {
+	return nil
+}
 
 type testMatrix struct {
 	MatrixConnector
@@ -434,6 +437,10 @@ func (s *simpleRemoteRemove) GetSender() EventSender { return s.sender }
 // not the user tapping the 🗑️ chip while the marker is enabled. A plain
 // reaction by the user is the control and is forwarded.
 func TestRemoteDeleteReactionNeverForwarded(t *testing.T) {
+	// Handle Matrix events as they are queued, so the control reaction below
+	// has reached the network by the time QueueMatrixEvent returns.
+	defer func(n int) { PortalEventBuffer = n }(PortalEventBuffer)
+	PortalEventBuffer = 0
 	ctx := zerolog.Nop().WithContext(context.Background())
 	portal, msgID := newTestPortal(t, RemoteDeletesMark)
 	bot := testBot(portal)
