@@ -339,6 +339,68 @@ func TestRemoteDeleteOwnMessageRedactsVersions(t *testing.T) {
 	}
 }
 
+// With double puppeting, the user's own delete is redacted by their double
+// puppet: every version goes, and nothing else is sent by anyone.
+func TestRemoteDeleteOwnMessageRedactsVersionsAsDoublePuppet(t *testing.T) {
+	ctx := zerolog.Nop().WithContext(context.Background())
+	portal, msgID := newTestPortal(t, RemoteDeletesMark)
+	matrix := portal.Bridge.Matrix.(testMatrix)
+	matrix.user = &testIntent{mxid: testUserMXID}
+	portal.Bridge.Matrix = matrix
+	login := testLogin(t, portal)
+	alice := matrix.GhostIntent("alice").(*testIntent)
+	for _, body := range []string{"v2", "v3"} {
+		if res := portal.sendConvertedEdit(ctx, login, msgID, "alice", editOf(partByID(t, portal, msgID, "1"), body), alice, time.Now(), 0); !res.Success {
+			t.Fatalf("edit = %+v", res)
+		}
+	}
+	v2 := id.EventID("$sent" + alice.sent[0].TransactionID)
+	want := map[id.EventID]bool{"$part0": true, "$part1": true, v2: true, partByID(t, portal, msgID, "1").MXID: true}
+	others := func() []*testIntent {
+		all := []*testIntent{testBot(portal)}
+		for _, ghost := range matrix.ghosts {
+			all = append(all, ghost)
+		}
+		return all
+	}
+	for _, intent := range append(others(), matrix.user) {
+		intent.sent, intent.sentTypes, intent.contents = nil, nil, nil
+	}
+
+	if res := portal.handleRemoteMessageRemove(ctx, login, &simpleRemoteRemove{sender: EventSender{IsFromMe: true, Sender: "me"}}); !res.Success {
+		t.Fatalf("delete = %+v", res)
+	}
+	for _, intent := range others() {
+		if len(intent.sentTypes) != 0 {
+			t.Fatalf("%s sent %v on an own delete; only the double puppet may redact", intent.mxid, intent.sentTypes)
+		}
+	}
+	got := map[id.EventID]bool{}
+	for i, content := range matrix.user.contents {
+		redaction, ok := content.Parsed.(*event.RedactionEventContent)
+		if !ok {
+			t.Fatalf("double puppet sent a %s on an own delete", matrix.user.sentTypes[i])
+		}
+		got[redaction.Redacts] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("double puppet redacted %v, want every version %v", got, want)
+	}
+	for mxid := range want {
+		if !got[mxid] {
+			t.Fatalf("%s wasn't redacted; redacted %v", mxid, got)
+		}
+	}
+	if versions, err := portal.getEditVersions(ctx, msgID); err != nil || len(versions) != 0 {
+		t.Fatalf("kept versions after the delete = %v, %v", versions, err)
+	}
+	for _, mxid := range []id.EventID{"$part1", v2} {
+		if part, err := portal.getPartByMXIDOrVersion(ctx, mxid); err != nil || part != nil {
+			t.Fatalf("%s still resolves after the delete: %+v, %v", mxid, part, err)
+		}
+	}
+}
+
 // A Matrix reply or reaction to an earlier version reaches the remote
 // message: the version resolves to the message's current part. (A live
 // pilot reply to the original went out without its reply relation.)
