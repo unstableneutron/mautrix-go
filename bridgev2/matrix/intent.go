@@ -839,7 +839,7 @@ func (as *ASIntent) GetEvent(ctx context.Context, roomID id.RoomID, eventID id.E
 }
 
 func (as *ASIntent) GetLatestEdit(ctx context.Context, roomID id.RoomID, eventID id.EventID) (*event.Event, error) {
-	resp, err := as.Matrix.GetRelations(ctx, roomID, eventID, &mautrix.ReqGetRelations{
+	resp, err := as.Matrix().GetRelations(ctx, roomID, eventID, &mautrix.ReqGetRelations{
 		RelationType: event.RelReplace,
 		Dir:          mautrix.DirectionBackward,
 		Limit:        20,
@@ -848,7 +848,7 @@ func (as *ASIntent) GetLatestEdit(ctx context.Context, roomID id.RoomID, eventID
 		return nil, err
 	}
 	for _, evt := range resp.Chunk {
-		if evt.Sender != as.Matrix.UserID {
+		if evt.Sender != as.Matrix().UserID {
 			continue
 		}
 		if err = evt.Content.ParseRaw(evt.Type); err != nil {
