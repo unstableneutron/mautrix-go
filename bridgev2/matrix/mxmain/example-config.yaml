@@ -98,8 +98,10 @@ bridge:
     #                        bridge bot (never bridged back), so every version stays readable. Your
     #                        own edits replace in place, and parts an edit removes stay as they were.
     #                        Each version is a new message and can notify.
-    #                        Reactions, replies and deletes from the network apply to the newest
-    #                        version; earlier versions are no longer linked to the remote message.
+    #                        Reactions and replies from the network apply to the newest version. A
+    #                        delete reaches every version: each kept one gets its own 🗑️ (or is
+    #                        redacted with remote_deletes: redact). While enabled, ✏️ reactions sent
+    #                        from Matrix aren't bridged.
     remote_edits: new_message_others
 
     # What should be done to portal rooms when a user logs out or is logged out?

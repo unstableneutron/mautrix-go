@@ -9,7 +9,10 @@ package bridgev2
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -73,4 +76,82 @@ func (portal *Portal) sendRemoteEditReaction(ctx context.Context, superseded id.
 func remoteEditTxnID(kind string, superseded id.EventID) string {
 	sum := sha256.Sum256([]byte(superseded))
 	return "mau-remote-edit-" + kind + "-" + hex.EncodeToString(sum[:16])
+}
+
+// editVersion is an earlier version of a message part that a remote edit
+// superseded. Versions are kept in the kv_store rather than the message
+// table, so connectors and lookups by event ID never see them.
+type editVersion struct {
+	PartID     networkid.PartID `json:"part_id"`
+	MXID       id.EventID       `json:"mxid"`
+	SenderMXID id.UserID        `json:"sender_mxid,omitempty"`
+}
+
+func (portal *Portal) editVersionsKey(msgID networkid.MessageID) database.Key {
+	return database.Key("fi.mau.bridge.remote_edit_versions\x1f" + string(portal.Receiver) + "\x1f" + string(portal.ID) + "\x1f" + string(msgID))
+}
+
+func (portal *Portal) getEditVersions(ctx context.Context, msgID networkid.MessageID) ([]editVersion, error) {
+	kv := portal.Bridge.DB.KV
+	var raw string
+	err := kv.QueryRow(ctx, `SELECT value FROM kv_store WHERE bridge_id = $1 AND key = $2`, kv.BridgeID, portal.editVersionsKey(msgID)).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to get kept edit versions: %w", err)
+	}
+	var versions []editVersion
+	if err = json.Unmarshal([]byte(raw), &versions); err != nil {
+		return nil, fmt.Errorf("failed to parse kept edit versions: %w", err)
+	}
+	return versions, nil
+}
+
+func (portal *Portal) addEditVersions(ctx context.Context, msgID networkid.MessageID, added []editVersion) error {
+	versions, err := portal.getEditVersions(ctx, msgID)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(append(versions, added...))
+	if err != nil {
+		return err
+	}
+	kv := portal.Bridge.DB.KV
+	_, err = kv.Exec(ctx, `
+		INSERT INTO kv_store (bridge_id, key, value) VALUES ($1, $2, $3)
+		ON CONFLICT (bridge_id, key) DO UPDATE SET value = $3
+	`, kv.BridgeID, portal.editVersionsKey(msgID), string(raw))
+	if err != nil {
+		return fmt.Errorf("failed to save kept edit versions: %w", err)
+	}
+	return nil
+}
+
+func (portal *Portal) deleteEditVersions(ctx context.Context, msgID networkid.MessageID) error {
+	kv := portal.Bridge.DB.KV
+	_, err := kv.Exec(ctx, `DELETE FROM kv_store WHERE bridge_id = $1 AND key = $2`, kv.BridgeID, portal.editVersionsKey(msgID))
+	if err != nil {
+		return fmt.Errorf("failed to forget kept edit versions: %w", err)
+	}
+	return nil
+}
+
+// withEditVersions returns a message's parts followed by its kept earlier
+// versions as row-less parts (RowID 0), so a delete reaches every version.
+func (portal *Portal) withEditVersions(ctx context.Context, parts []*database.Message) ([]*database.Message, error) {
+	if len(parts) == 0 {
+		return parts, nil
+	}
+	versions, err := portal.getEditVersions(ctx, parts[0].ID)
+	if err != nil || len(versions) == 0 {
+		return parts, err
+	}
+	all := append(make([]*database.Message, 0, len(parts)+len(versions)), parts...)
+	for _, version := range versions {
+		all = append(all, &database.Message{
+			BridgeID: parts[0].BridgeID, ID: parts[0].ID, PartID: version.PartID, MXID: version.MXID,
+			Room: parts[0].Room, SenderMXID: version.SenderMXID, Timestamp: parts[0].Timestamp,
+		})
+	}
+	return all, nil
 }

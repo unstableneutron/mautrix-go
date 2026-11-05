@@ -1713,9 +1713,10 @@ func (portal *Portal) handleMatrixReaction(ctx context.Context, sender *UserLogi
 	log.UpdateContext(func(c zerolog.Context) zerolog.Context {
 		return c.Stringer("reaction_target_mxid", content.RelatesTo.EventID)
 	})
-	if portal.Bridge.Config.RemoteDeleteReaction && content.RelatesTo.Key == RemoteDeleteReactionKey {
-		// The bot's 🗑️ marks remote deletes on Matrix only; tapping its chip
-		// must not react on the network either.
+	if (portal.Bridge.Config.RemoteDeleteReaction && content.RelatesTo.Key == RemoteDeleteReactionKey) ||
+		(portal.Bridge.Config.RemoteEdits == RemoteEditsNewMessageOthers && content.RelatesTo.Key == RemoteEditReactionKey) {
+		// The bot's 🗑️ and ✏️ mark kept deletes and edits on Matrix only;
+		// tapping their chips must not react on the network either.
 		log.Debug().Msg("Not bridging the remote delete marker reaction")
 		return EventHandlingResultIgnored
 	}
@@ -3410,12 +3411,14 @@ func (portal *Portal) sendConvertedEdit(
 			return EventHandlingResultFailed.WithError(err)
 		}
 	}
+	var keptVersions []editVersion
 	for i, part := range converted.ModifiedParts {
 		if part.Content.Mentions == nil {
 			part.Content.Mentions = &event.Mentions{}
 		}
 		overrideMXID := true
 		var txnID string
+		superseded := editVersion{PartID: part.Part.PartID, MXID: part.Part.MXID, SenderMXID: part.Part.SenderMXID}
 		if part.Part.Room != portal.PortalKey {
 			part.Part.Room = portal.PortalKey
 		} else if reactionTarget != nil && !part.DontBridge && portal.keepEditVersion(ctx, source, senderID, part.Part) {
@@ -3470,6 +3473,9 @@ func (portal *Portal) sendConvertedEdit(
 				if overrideMXID {
 					part.Part.MXID = resp.EventID
 				}
+				if txnID != "" {
+					keptVersions = append(keptVersions, superseded)
+				}
 			}
 		}
 		updatedParts = append(updatedParts, part.Part)
@@ -3478,6 +3484,7 @@ func (portal *Portal) sendConvertedEdit(
 	for _, part := range converted.DeletedParts {
 		if portal.keepEditVersion(ctx, source, senderID, part) {
 			// The removed part stays as an earlier version; only its row goes.
+			keptVersions = append(keptVersions, editVersion{PartID: part.PartID, MXID: part.MXID, SenderMXID: part.SenderMXID})
 			deletedParts = append(deletedParts, part.RowID)
 			continue
 		}
@@ -3510,6 +3517,11 @@ func (portal *Portal) sendConvertedEdit(
 		}
 	}
 	saveErr := portal.Bridge.DB.DoTxn(ctx, nil, func(ctx context.Context) error {
+		if len(keptVersions) > 0 {
+			if err := portal.addEditVersions(ctx, targetID, keptVersions); err != nil {
+				return err
+			}
+		}
 		for _, part := range updatedParts {
 			err := portal.Bridge.DB.Message.Update(ctx, part)
 			if err != nil {
@@ -3944,17 +3956,26 @@ func (portal *Portal) handleRemoteMessageRemove(ctx context.Context, source *Use
 	}
 	dontRenderPlaceholderProvider, ok := evt.(RemoteMessageRemoveWithoutPlaceholder)
 	dontRenderPlaceholder := ok && dontRenderPlaceholderProvider.DontRenderPlaceholder()
+	// Earlier versions kept by remote_edits are deleted or kept along with the message.
+	allParts, err := portal.withEditVersions(ctx, targetParts)
+	if err != nil {
+		log.Err(err).Msg("Failed to get kept edit versions of target message")
+		return EventHandlingResultFailed.WithError(err)
+	}
 	if !onlyForMe && portal.shouldMarkRemoteDelete(evt) {
 		// The parts stay in the database so replies and reactions still resolve.
-		return portal.markMessageParts(ctx, targetParts, intent, getEventTS(evt))
+		return portal.markMessageParts(ctx, allParts, intent, getEventTS(evt))
 	}
-	res := portal.redactMessageParts(ctx, targetParts, intent, getEventTS(evt), "", dontRenderPlaceholder)
+	res := portal.redactMessageParts(ctx, allParts, intent, getEventTS(evt), "", dontRenderPlaceholder)
 	if !res.Success {
 		return res
 	}
 	err = portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, targetParts[0].ID)
 	if err != nil {
 		log.Err(err).Msg("Failed to delete target message from database")
+		return EventHandlingResultFailed.WithError(err)
+	} else if err = portal.deleteEditVersions(ctx, targetParts[0].ID); err != nil {
+		log.Err(err).Msg("Failed to delete kept edit versions from database")
 		return EventHandlingResultFailed.WithError(err)
 	}
 	return res
