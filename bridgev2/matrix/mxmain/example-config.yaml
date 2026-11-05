@@ -77,6 +77,17 @@ bridge:
     #          outlast the remote network's own retention. Deletes made on Matrix are unaffected.
     #   mark_all - Like mark, but also keep messages you deleted on the remote network.
     remote_deletes: redact
+    # How a message kept by remote_deletes is marked. Both markers are sent by the bridge bot,
+    # never by the person who deleted it, and neither is bridged back to the network.
+    #   remote_delete_reaction - a 🗑️ reaction on the message (one per message, on its first part).
+    #   remote_delete_notice   - a "Deleted in <network>" notice replying to the message, sent only
+    #                            when it can't be edited in place (the bridge can't read its own
+    #                            encrypted events back once keys ratchet). It can still notify,
+    #                            depending on the client's push rules.
+    # Both, either or neither can be enabled. With neither, a message that can't be edited is
+    # kept without any marker.
+    remote_delete_notice: true
+    remote_delete_reaction: true
 
     # What should be done to portal rooms when a user logs out or is logged out?
     # Permitted values:
