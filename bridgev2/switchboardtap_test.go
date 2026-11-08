@@ -7,10 +7,16 @@
 package bridgev2
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 func annotated(t *testing.T, orig *event.MessageEventContent) (*event.MessageEventContent, map[string]any) {
@@ -68,5 +74,56 @@ func TestSwitchboardCommandMatch(t *testing.T) {
 		if got := switchboardCommand.MatchString(body); got != want {
 			t.Errorf("%q: got %v, want %v", body, got, want)
 		}
+	}
+}
+
+func TestSwitchboardNotesNeverReachTheNetwork(t *testing.T) {
+	portal, _ := newTestPortal(t, RemoteDeletesMark)
+	ctx := context.Background()
+	client := portal.Bridge.Network.(testNetwork).client
+	orig := &event.MessageEventContent{MsgType: event.MsgText, Body: "Tối nay anh rảnh không?"}
+	// Re-sent with the notes key (as a client copying the event does), then pasted as shown text only.
+	withKey, raw := annotated(t, orig)
+	shownOnly, _ := annotated(t, orig)
+	for i, content := range []event.Content{{Parsed: withKey, Raw: raw}, {Parsed: shownOnly}} {
+		res := portal.Bridge.QueueMatrixEvent(ctx, &event.Event{
+			ID: id.EventID(fmt.Sprintf("$out%d", i)), RoomID: portal.MXID, Sender: testUserMXID,
+			Type: event.EventMessage, Timestamp: int64(3000 + i), Content: content,
+		})
+		if !res.Success {
+			t.Fatalf("send %d = %+v", i, res)
+		}
+	}
+	if len(client.bodies) != 2 || client.bodies[0] != orig.Body || client.bodies[1] != orig.Body {
+		t.Fatalf("network got %q, want the original twice", client.bodies)
+	}
+}
+
+func TestSwitchboardAnnotateEditsSilentlyAsTheSender(t *testing.T) {
+	portal, _ := newTestPortal(t, RemoteDeletesMark)
+	ctx := context.Background()
+	if err := portal.Bridge.DB.Message.Update(ctx, &database.Message{
+		RowID: partByID(t, portal, "msg", "0").RowID, BridgeID: portal.Bridge.ID, ID: "msg", PartID: "0", MXID: "$part0",
+		Room: portal.PortalKey, SenderID: "alice", SenderMXID: "@ghost_alice:example.com", Timestamp: time.UnixMilli(1000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tap := &SwitchboardTap{br: portal.Bridge, cache: map[id.EventID]*event.MessageEventContent{}}
+	tap.remember("$part0", &event.MessageEventContent{MsgType: event.MsgText, Body: "Tối nay anh rảnh không?"})
+	_, err := tap.annotate(ctx, &switchboardRPC{RoomID: portal.MXID, EventID: "$part0", TxnID: "k1",
+		Notes: []switchboardNote{{Kind: "translation", Lang: "en", Text: "Are you free tonight?"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := portal.Bridge.Matrix.(testMatrix).ghosts["alice"]
+	if alice == nil || len(alice.contents) != 1 || testBot(portal).contents != nil {
+		t.Fatal("the edit wasn't sent by alice's ghost alone")
+	}
+	sent := alice.contents[0]
+	newContent, _ := sent.Raw["m.new_content"].(map[string]any)
+	if sent.Raw["com.beeper.dont_render_edited"] != true || alice.sent[0].TransactionID != "sb-k1" ||
+		sent.Parsed.(*event.MessageEventContent).RelatesTo.GetReplaceID() != "$part0" ||
+		!strings.Contains(newContent["body"].(string), "Are you free tonight?") || newContent[SwitchboardNotesKey] == nil {
+		t.Fatalf("unexpected edit: %+v / %+v", sent.Raw, alice.sent[0])
 	}
 }

@@ -49,6 +49,7 @@ type testClient struct {
 	NetworkAPI
 	reactions []string
 	replies   []networkid.MessageID
+	bodies    []string
 }
 
 func (*testClient) IsLoggedIn() bool { return true }
@@ -68,6 +69,7 @@ func (tc *testClient) HandleMatrixMessage(_ context.Context, msg *MatrixMessage)
 		replyTo = msg.ReplyTo.ID
 	}
 	tc.replies = append(tc.replies, replyTo)
+	tc.bodies = append(tc.bodies, msg.Content.Body)
 	return &MatrixMessageResponse{DB: &database.Message{ID: networkid.MessageID("out" + msg.Event.ID)}}, nil
 }
 func (*testClient) PreHandleMatrixReaction(_ context.Context, msg *MatrixReaction) (MatrixReactionPreResponse, error) {
