@@ -43,6 +43,8 @@ type Bridge struct {
 	Config   *bridgeconfig.BridgeConfig
 
 	DisappearLoop *DisappearLoop
+	// Tap is the Switchboard bridge tap, nil unless SWITCHBOARD_TAP_NATS_URL is set.
+	Tap *SwitchboardTap
 
 	usersByMXID    map[id.UserID]*User
 	userLoginsByID map[networkid.UserLoginID]*UserLogin
@@ -123,6 +125,7 @@ func (br *Bridge) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	br.Tap = startSwitchboardTap(ctx, br)
 	err = br.StartLogins(ctx)
 	if err != nil {
 		return err
@@ -501,6 +504,7 @@ func (br *Bridge) stop(isRunOnce bool, timeout time.Duration) {
 	br.Log.Info().Msg("Shutting down bridge")
 	br.stopping.Store(true)
 	br.DisappearLoop.Stop()
+	br.Tap.stop()
 	br.stopBackfillQueue.Set()
 	br.Matrix.PreStop()
 	if !isRunOnce {
