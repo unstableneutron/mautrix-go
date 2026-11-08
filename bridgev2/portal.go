@@ -1274,6 +1274,14 @@ func (portal *Portal) handleMatrixMessage(ctx context.Context, sender *UserLogin
 	} else {
 		msgContent, ok = evt.Content.Parsed.(*event.MessageEventContent)
 		relatesTo = msgContent.RelatesTo
+		// Switchboard notes (e.g. translations) are shown on Matrix only and never sent to the network.
+		if SanitizeSwitchboardNotes(msgContent, evt.Content.Raw) {
+			log.Debug().Msg("Removed Switchboard notes from outgoing message")
+		}
+		if newRaw, _ := evt.Content.Raw["m.new_content"].(map[string]any); msgContent.NewContent != nil &&
+			SanitizeSwitchboardNotes(msgContent.NewContent, newRaw) {
+			log.Debug().Msg("Removed Switchboard notes from outgoing edit")
+		}
 		if evt.Type == event.EventSticker {
 			msgContent.MsgType = event.CapMsgSticker
 		}
@@ -3290,7 +3298,9 @@ func (portal *Portal) handleRemoteMessage(ctx context.Context, source *UserLogin
 			return EventHandlingResultFailed.WithError(err)
 		}
 	}
-	_, res = portal.sendConvertedMessage(ctx, source, evt.GetID(), intent, evt.GetSender().Sender, converted, ts, getStreamOrder(evt), nil, true)
+	var parts []*database.Message
+	parts, res = portal.sendConvertedMessage(ctx, source, evt.GetID(), intent, evt.GetSender().Sender, converted, ts, getStreamOrder(evt), nil, true)
+	portal.Bridge.Tap.messageBridged(portal, evt.GetSender(), parts, converted)
 	if portal.currentlyTypingGhosts.Pop(intent.GetMXID()) {
 		err = intent.MarkTyping(ctx, portal.MXID, TypingTypeText, 0)
 		if err != nil {
@@ -3373,6 +3383,9 @@ func (portal *Portal) handleRemoteEdit(ctx context.Context, source *UserLogin, e
 		return EventHandlingResultFailed.WithError(err)
 	}
 	res := portal.sendConvertedEdit(ctx, source, existing[0].ID, evt.GetSender().Sender, converted, intent, ts, getStreamOrder(evt))
+	if res.Success {
+		portal.Bridge.Tap.messageEdited(portal, evt.GetSender(), converted, ts)
+	}
 	if portal.currentlyTypingGhosts.Pop(intent.GetMXID()) {
 		err = intent.MarkTyping(ctx, portal.MXID, TypingTypeText, 0)
 		if err != nil {

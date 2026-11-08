@@ -111,6 +111,9 @@ func (br *Bridge) QueueMatrixEvent(ctx context.Context, evt *event.Event) EventH
 		msg := evt.Content.AsMessage()
 		msg.RemoveReplyFallback()
 		msg.RemovePerMessageProfileFallback()
+		if sender.Permissions.Commands && br.Tap.interceptCommand(ctx, evt, sender, msg.Body) {
+			return EventHandlingResultSuccess
+		}
 		if strings.HasPrefix(msg.Body, br.Config.CommandPrefix) || evt.RoomID == sender.ManagementRoom {
 			if !sender.Permissions.Commands {
 				br.Matrix.SendMessageStatus(ctx, &ErrNoPermissionForCommands, StatusEventInfoFromEvent(evt))
