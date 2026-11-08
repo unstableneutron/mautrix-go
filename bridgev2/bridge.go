@@ -125,7 +125,6 @@ func (br *Bridge) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	br.Tap = startSwitchboardTap(ctx, br)
 	err = br.StartLogins(ctx)
 	if err != nil {
 		return err
@@ -220,6 +219,10 @@ func (br *Bridge) StartConnectors(ctx context.Context) error {
 		go br.DisappearLoop.Start()
 	}
 	br.startUnknownRoomCleanup(ctx)
+	// Started here, not in Start: mxmain calls StartConnectors and StartLogins directly.
+	if !br.Background && br.Tap == nil {
+		br.Tap = startSwitchboardTap(ctx, br)
+	}
 	return nil
 }
 
