@@ -391,7 +391,7 @@ func buildAnnotatedContent(orig *event.MessageEventContent, notes []switchboardN
 	items := make([]map[string]any, 0, len(notes))
 	for _, note := range notes {
 		body += "\n\n" + switchboardNoteMarker + "🌐 " + note.Text
-		html += fmt.Sprintf(`<p data-sb-note="%s" lang="%s">%s%s</p>`,
+		html += fmt.Sprintf(`<p data-sb-note="%s" lang="%s">%s<em>%s</em></p>`,
 			event.TextToHTML(note.Kind), event.TextToHTML(note.Lang), switchboardNoteMarker, event.TextToHTML(note.Text))
 		items = append(items, map[string]any{"kind": note.Kind, "lang": note.Lang, "source_lang": note.SourceLang, "text": note.Text})
 	}

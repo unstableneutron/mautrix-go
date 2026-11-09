@@ -39,6 +39,8 @@ func TestSanitizeSwitchboardNotesRestoresOriginal(t *testing.T) {
 	for _, orig := range []*event.MessageEventContent{
 		{MsgType: event.MsgText, Body: "Tối nay anh rảnh không?"},
 		{MsgType: event.MsgText, Body: "**Tối** nay", Format: event.FormatHTML, FormattedBody: "<b>Tối</b> nay"},
+		{MsgType: event.MsgText, Body: "> Ghi chú\n1. Kiểm tra\n\nSELECT 1;", Format: event.FormatHTML,
+			FormattedBody: "<blockquote>Ghi chú</blockquote><ol><li>Kiểm tra</li></ol><pre><code>SELECT 1;</code></pre>"},
 	} {
 		content, raw := annotated(t, orig)
 		if content.Body == orig.Body {
@@ -109,9 +111,10 @@ func TestSwitchboardAnnotateEditsSilentlyAsTheSender(t *testing.T) {
 		t.Fatal(err)
 	}
 	tap := &SwitchboardTap{br: portal.Bridge, cache: map[id.EventID]*event.MessageEventContent{}}
-	tap.remember("$part0", &event.MessageEventContent{MsgType: event.MsgText, Body: "Tối nay anh rảnh không?"})
+	origHTML := "<blockquote>Ghi chú</blockquote><ul><li>Kiểm tra</li></ul><pre><code>SELECT 1;</code></pre>"
+	tap.remember("$part0", &event.MessageEventContent{MsgType: event.MsgText, Body: "> Ghi chú\n- Kiểm tra\n\nSELECT 1;", Format: event.FormatHTML, FormattedBody: origHTML})
 	_, err := tap.annotate(ctx, &switchboardRPC{RoomID: portal.MXID, EventID: "$part0", TxnID: "k1",
-		Notes: []switchboardNote{{Kind: "translation", Lang: "en", Text: "Are you free tonight?"}}})
+		Notes: []switchboardNote{{Kind: "translation", Lang: "en", Text: "Note\n- Check <status>"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +126,12 @@ func TestSwitchboardAnnotateEditsSilentlyAsTheSender(t *testing.T) {
 	newContent, _ := sent.Raw["m.new_content"].(map[string]any)
 	if sent.Raw["com.beeper.dont_render_edited"] != true || alice.sent[0].TransactionID != "sb-k1" ||
 		sent.Parsed.(*event.MessageEventContent).RelatesTo.GetReplaceID() != "$part0" ||
-		!strings.Contains(newContent["body"].(string), "Are you free tonight?") || newContent[SwitchboardNotesKey] == nil {
+		!strings.Contains(newContent["body"].(string), "Note\n- Check <status>") || newContent[SwitchboardNotesKey] == nil {
 		t.Fatalf("unexpected edit: %+v / %+v", sent.Raw, alice.sent[0])
+	}
+	html := newContent["formatted_body"].(string)
+	if !strings.Contains(html, origHTML+"</font><hr data-sb-note>") ||
+		!strings.Contains(html, "<em>Note<br/>- Check &lt;status&gt;</em>") {
+		t.Fatalf("original formatting or italic escaped translation lost: %s", html)
 	}
 }
