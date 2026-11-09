@@ -38,11 +38,16 @@ import (
 // SwitchboardNotesKey holds Switchboard's notes (e.g. translations) and the original content.
 const SwitchboardNotesKey = "app.0x12.switchboard.notes"
 
-// switchboardNoteMarker starts a note in the shown body; text from it on is never bridged out.
-const switchboardNoteMarker = "\u2063🌐"
+// switchboardNoteMarker (an invisible separator) starts the notes in the shown text, also when a
+// client copies it; text from it on is never bridged out.
+const switchboardNoteMarker = "\u2063"
+
+// switchboardOriginalColor greys the original above the divider, as iMessage shows translations.
+const switchboardOriginalColor = "#8e8e93"
 
 var switchboardCommand = regexp.MustCompile(`^!sb(\s|$)`)
-var switchboardNoteHTML = regexp.MustCompile(`(?s)<p data-sb-note.*$`)
+var switchboardNoteHTML = regexp.MustCompile(`(?s)<(hr|p) data-sb-note.*$`)
+var switchboardOriginalHTML = regexp.MustCompile(`(?s)^<font data-sb-original[^>]*>(.*)</font>$`)
 
 type SwitchboardTap struct {
 	br       *Bridge
@@ -286,6 +291,7 @@ func SanitizeSwitchboardNotes(content *event.MessageEventContent, raw map[string
 		if idx := strings.Index(cut, switchboardNoteMarker); idx >= 0 {
 			cut = cut[:idx]
 		}
+		cut = switchboardOriginalHTML.ReplaceAllString(strings.TrimRight(cut, " \n"), "$1")
 		if cut != content.FormattedBody {
 			content.FormattedBody = strings.TrimRight(cut, " \n")
 			changed = true
@@ -379,11 +385,13 @@ func buildAnnotatedContent(orig *event.MessageEventContent, notes []switchboardN
 	if html == "" {
 		html = event.TextToHTML(orig.Body)
 	}
+	// Like iMessage: the original greyed, a divider, then the translation.
+	html = fmt.Sprintf(`<font data-sb-original color="%[1]s" data-mx-color="%[1]s">%[2]s</font><hr data-sb-note>`, switchboardOriginalColor, html)
 	body := orig.Body
 	items := make([]map[string]any, 0, len(notes))
 	for _, note := range notes {
-		body += "\n\n" + switchboardNoteMarker + " " + note.Text
-		html += fmt.Sprintf(`<p data-sb-note="%s" lang="%s">%s <i>%s</i></p>`,
+		body += "\n\n" + switchboardNoteMarker + "🌐 " + note.Text
+		html += fmt.Sprintf(`<p data-sb-note="%s" lang="%s">%s%s</p>`,
 			event.TextToHTML(note.Kind), event.TextToHTML(note.Lang), switchboardNoteMarker, event.TextToHTML(note.Text))
 		items = append(items, map[string]any{"kind": note.Kind, "lang": note.Lang, "source_lang": note.SourceLang, "text": note.Text})
 	}
