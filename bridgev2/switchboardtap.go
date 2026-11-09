@@ -43,6 +43,9 @@ const SwitchboardNotesKey = "app.0x12.switchboard.notes"
 // client copies it; text from it on is never bridged out.
 const switchboardNoteMarker = "\u2063"
 
+// Use visible text: Beeper iOS omits HTML horizontal rules.
+const switchboardNoteSeparator = "────────"
+
 // switchboardOriginalColor greys the original above the divider, as iMessage shows translations.
 const switchboardOriginalColor = "#8e8e93"
 
@@ -387,9 +390,9 @@ func buildAnnotatedContent(orig *event.MessageEventContent, notes []switchboardN
 	if html == "" {
 		html = event.TextToHTML(orig.Body)
 	}
-	// Like iMessage: the original greyed, a divider, then the translation.
-	html = fmt.Sprintf(`<font data-sb-original color="%[1]s" data-mx-color="%[1]s">%[2]s</font><hr data-sb-note>`, switchboardOriginalColor, html)
-	body := orig.Body
+	// Keep the separator inside the notes so copying a message never bridges it out.
+	html = fmt.Sprintf(`<font data-sb-original color="%[1]s" data-mx-color="%[1]s">%[2]s</font><p data-sb-note>%[3]s%[4]s</p>`, switchboardOriginalColor, html, switchboardNoteMarker, switchboardNoteSeparator)
+	body := orig.Body + "\n\n" + switchboardNoteMarker + switchboardNoteSeparator
 	items := make([]map[string]any, 0, len(notes))
 	for _, note := range notes {
 		noteBody := note.Text

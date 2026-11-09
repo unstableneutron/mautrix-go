@@ -130,9 +130,11 @@ func TestSwitchboardAnnotateEditsSilentlyAsTheSender(t *testing.T) {
 		t.Fatalf("unexpected edit: %+v / %+v", sent.Raw, alice.sent[0])
 	}
 	html := newContent["formatted_body"].(string)
-	if !strings.Contains(html, origHTML+"</font><hr data-sb-note>") ||
+	if !strings.Contains(html, origHTML+"</font><p data-sb-note>"+switchboardNoteMarker+"────────</p>") ||
+		strings.Contains(html, "<hr") ||
+		!strings.Contains(newContent["body"].(string), "\n\n"+switchboardNoteMarker+"────────\n") ||
 		!strings.Contains(html, "<em>Note<br/>- Check &lt;status&gt;</em>") {
-		t.Fatalf("original formatting or italic escaped translation lost: %s", html)
+		t.Fatalf("original formatting, text separator or italic escaped translation lost: %s", html)
 	}
 	_, err = tap.annotate(ctx, &switchboardRPC{RoomID: portal.MXID, EventID: "$part0", TxnID: "k2",
 		Notes: []switchboardNote{{Kind: "translation", Lang: "en", Format: "markdown", Text: "*Use* `printf('tiếng Việt')`\n\n3. *Check report*\n   - *Send before 5 PM*\n4. *Done*\n\n<script>alert(1)</script>"}}})
