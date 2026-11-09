@@ -21,6 +21,7 @@ import (
 
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -46,7 +47,7 @@ const switchboardNoteMarker = "\u2063"
 const switchboardOriginalColor = "#8e8e93"
 
 var switchboardCommand = regexp.MustCompile(`^!sb(\s|$)`)
-var switchboardNoteHTML = regexp.MustCompile(`(?s)<(hr|p) data-sb-note.*$`)
+var switchboardNoteHTML = regexp.MustCompile(`(?s)<(hr|p|div) data-sb-note.*$`)
 var switchboardOriginalHTML = regexp.MustCompile(`(?s)^<font data-sb-original[^>]*>(.*)</font>$`)
 
 type SwitchboardTap struct {
@@ -313,6 +314,7 @@ type switchboardNote struct {
 	Lang       string `json:"lang,omitempty"`
 	SourceLang string `json:"source_lang,omitempty"`
 	Text       string `json:"text"`
+	Format     string `json:"format,omitempty"`
 }
 
 func (t *SwitchboardTap) serve(ctx context.Context, handler func(context.Context, *switchboardRPC) (any, error)) nats.MsgHandler {
@@ -390,10 +392,24 @@ func buildAnnotatedContent(orig *event.MessageEventContent, notes []switchboardN
 	body := orig.Body
 	items := make([]map[string]any, 0, len(notes))
 	for _, note := range notes {
-		body += "\n\n" + switchboardNoteMarker + "🌐 " + note.Text
-		html += fmt.Sprintf(`<p data-sb-note="%s" lang="%s">%s<em>%s</em></p>`,
-			event.TextToHTML(note.Kind), event.TextToHTML(note.Lang), switchboardNoteMarker, event.TextToHTML(note.Text))
-		items = append(items, map[string]any{"kind": note.Kind, "lang": note.Lang, "source_lang": note.SourceLang, "text": note.Text})
+		noteBody := note.Text
+		noteHTML := "<em>" + event.TextToHTML(note.Text) + "</em>"
+		tag := "p"
+		if note.Format == "markdown" {
+			// Switchboard restores the original list structure locally; model output is escaped prose.
+			// Never allow raw HTML in notes, even if an RPC caller supplies it.
+			rendered := format.RenderMarkdown(note.Text, true, false)
+			noteBody = rendered.Body
+			noteHTML = rendered.FormattedBody
+			if noteHTML == "" {
+				noteHTML = event.TextToHTML(noteBody)
+			}
+			tag = "div"
+		}
+		body += "\n\n" + switchboardNoteMarker + "🌐 " + noteBody
+		html += fmt.Sprintf(`<%[1]s data-sb-note="%[2]s" lang="%[3]s">%[4]s%[5]s</%[1]s>`,
+			tag, event.TextToHTML(note.Kind), event.TextToHTML(note.Lang), switchboardNoteMarker, noteHTML)
+		items = append(items, map[string]any{"kind": note.Kind, "lang": note.Lang, "source_lang": note.SourceLang, "text": note.Text, "format": note.Format})
 	}
 	original := map[string]any{"body": orig.Body}
 	if orig.FormattedBody != "" {

@@ -134,4 +134,27 @@ func TestSwitchboardAnnotateEditsSilentlyAsTheSender(t *testing.T) {
 		!strings.Contains(html, "<em>Note<br/>- Check &lt;status&gt;</em>") {
 		t.Fatalf("original formatting or italic escaped translation lost: %s", html)
 	}
+	_, err = tap.annotate(ctx, &switchboardRPC{RoomID: portal.MXID, EventID: "$part0", TxnID: "k2",
+		Notes: []switchboardNote{{Kind: "translation", Lang: "en", Format: "markdown", Text: "*Use* `printf('tiếng Việt')`\n\n3. *Check report*\n   - *Send before 5 PM*\n4. *Done*\n\n<script>alert(1)</script>"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured := alice.contents[1].Raw["m.new_content"].(map[string]any)
+	html = structured["formatted_body"].(string)
+	for _, want := range []string{origHTML, `<ol start="3">`, "<ul>", "<em>Check report</em>", "<code>printf('tiếng Việt')</code>"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("structured note lost %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "<script>") {
+		t.Fatal("note rendered raw HTML")
+	}
+	// Forwarding the structured annotation still restores only the original, with its formatting.
+	data, _ := json.Marshal(structured)
+	var outgoing event.MessageEventContent
+	_ = json.Unmarshal(data, &outgoing)
+	SanitizeSwitchboardNotes(&outgoing, nil)
+	if outgoing.FormattedBody != origHTML || outgoing.Body != "> Ghi chú\n- Kiểm tra\n\nSELECT 1;" {
+		t.Fatalf("structured note leaked into a copy: %+v", outgoing)
+	}
 }
