@@ -165,7 +165,7 @@ func (br *Bridge) RunOnce(ctx context.Context, loginID networkid.UserLoginID, pa
 	syncClient, ok := login.Client.(BackgroundSyncingNetworkAPI)
 	if !ok {
 		br.Log.Warn().Msg("Network connector doesn't implement background mode, using fallback mechanism for RunOnce")
-		login.Client.Connect(ctx)
+		login.Connect(ctx)
 		defer login.DisconnectWithTimeout(5 * time.Second)
 		select {
 		case <-time.After(20 * time.Second):
@@ -432,7 +432,7 @@ func (br *Bridge) StartLoginsForUsers(ctx context.Context, users []*User) {
 		for _, login := range user.GetUserLogins() {
 			startedAny = true
 			br.Log.Info().Str("id", string(login.ID)).Msg("Starting user login")
-			login.Client.Connect(login.Log.WithContext(ctx))
+			login.Connect(login.Log.WithContext(ctx))
 		}
 	}
 	if !startedAny {
@@ -467,8 +467,7 @@ func (br *Bridge) ResetNetworkConnections() {
 	for _, login := range br.GetAllCachedUserLogins() {
 		login.Log.Debug().Msg("Disconnecting and recreating client for network reset")
 		ctx := login.Log.WithContext(br.BackgroundCtx)
-		login.Client.Disconnect()
-		err := login.recreateClient(ctx)
+		err := login.reconnectClient(ctx)
 		if err != nil {
 			login.Log.Err(err).Msg("Failed to recreate client during network reset")
 			login.BridgeState.Send(status.BridgeState{
@@ -476,8 +475,6 @@ func (br *Bridge) ResetNetworkConnections() {
 				Error:      "bridgev2-network-reset-fail",
 				Info:       map[string]any{"go_error": err.Error()},
 			})
-		} else {
-			login.Client.Connect(ctx)
 		}
 	}
 	br.Log.Info().Msg("Finished resetting all user logins")

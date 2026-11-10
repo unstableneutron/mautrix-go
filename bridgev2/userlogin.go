@@ -38,6 +38,8 @@ type UserLogin struct {
 
 	spaceCreateLock sync.Mutex
 	deleteLock      sync.Mutex
+	deleted         bool // protected by deleteLock; a deleted object cannot act on a replacement ID
+	clientStarted   bool // protected by deleteLock; Connect runs once per client instance
 	disconnectOnce  sync.Once
 }
 
@@ -177,7 +179,10 @@ func (br *Bridge) GetCurrentBridgeStates() (states []status.BridgeState) {
 }
 
 type NewLoginParams struct {
-	LoadUserLogin     func(context.Context, *UserLogin) error
+	LoadUserLogin func(context.Context, *UserLogin) error
+	// AfterSave activates connector-owned durable state only after the login
+	// row exists. It runs before the replacement is returned to callers.
+	AfterSave         func(context.Context, *UserLogin) error
 	DeleteOnConflict  bool
 	DontReuseExisting bool
 }
@@ -230,6 +235,13 @@ func (user *User) NewLogin(ctx context.Context, data *database.UserLogin, params
 		if params.DontReuseExisting {
 			return nil, fmt.Errorf("login already exists")
 		}
+		// Match Delete's deleteLock -> cacheLock ordering. In particular, don't
+		// wait for this lock while holding cacheLock: Disconnect can use caches.
+		existing.deleteLock.Lock()
+		defer existing.deleteLock.Unlock()
+		if existing.deleted {
+			return nil, ErrLoginChangedConcurrently
+		}
 		existingClient = existing.Client
 		if existingClient != nil {
 			if err := ctx.Err(); err != nil {
@@ -237,6 +249,7 @@ func (user *User) NewLogin(ctx context.Context, data *database.UserLogin, params
 			}
 			existingClient.Disconnect()
 		}
+		existing.clientStarted = false
 	}
 
 	user.Bridge.cacheLock.Lock()
@@ -300,6 +313,11 @@ func (user *User) NewLogin(ctx context.Context, data *database.UserLogin, params
 			return nil, err
 		}
 	}
+	if params.AfterSave != nil {
+		if err = params.AfterSave(noCancelCtx, ul); err != nil {
+			return nil, err
+		}
+	}
 	return ul, nil
 }
 
@@ -326,8 +344,16 @@ func (ul *UserLogin) Delete(ctx context.Context, state status.BridgeState, opts 
 		Msg("Deleting user login")
 	ul.deleteLock.Lock()
 	defer ul.deleteLock.Unlock()
-	if ul.BridgeState == nil {
+	if ul.deleted {
 		return
+	}
+	// Connectors with independently durable credential epochs must retire them
+	// before framework deletion can remove/recreate this login and its caches.
+	if preparer, ok := ul.Client.(interface{ PrepareDelete(context.Context) error }); ok {
+		if err := preparer.PrepareDelete(ctx); err != nil {
+			ul.Log.Error().Msg("Connector could not prepare durable login deletion")
+			return
+		}
 	}
 	if opts.LogoutRemote {
 		ul.Client.LogoutRemote(ctx)
@@ -344,7 +370,9 @@ func (ul *UserLogin) Delete(ctx context.Context, state status.BridgeState, opts 
 	err = ul.Bridge.DB.UserLogin.Delete(ctx, ul.ID)
 	if err != nil {
 		ul.Log.Err(err).Msg("Failed to delete user login")
+		return
 	}
+	ul.deleted = true
 	if !opts.unlocked {
 		ul.Bridge.cacheLock.Lock()
 	}
@@ -600,8 +628,16 @@ func (ul *UserLogin) disconnectInternal(timeout time.Duration) {
 	}
 }
 
-func (ul *UserLogin) recreateClient(ctx context.Context) error {
+// reconnectClient serializes disconnect, replacement and connection against
+// login replacement/deletion. No caller may publish a stale client afterward.
+func (ul *UserLogin) reconnectClient(ctx context.Context) error {
+	ul.deleteLock.Lock()
+	defer ul.deleteLock.Unlock()
+	if ul.deleted {
+		return ErrLoginChangedConcurrently
+	}
 	oldClient := ul.Client
+	oldClient.Disconnect()
 	err := ul.Bridge.Network.LoadUserLogin(ctx, ul)
 	if err != nil {
 		return err
@@ -612,5 +648,23 @@ func (ul *UserLogin) recreateClient(ctx context.Context) error {
 		zerolog.Ctx(ctx).Debug().Msg("Recreated user login client")
 	}
 	ul.disconnectOnce = sync.Once{}
+	ul.clientStarted = false
+	ul.connectLocked(ctx)
 	return nil
+}
+
+// Connect starts the current client at most once, serialized with reset,
+// replacement and deletion. A delayed login completion cannot start it twice.
+func (ul *UserLogin) Connect(ctx context.Context) {
+	ul.deleteLock.Lock()
+	defer ul.deleteLock.Unlock()
+	ul.connectLocked(ctx)
+}
+
+func (ul *UserLogin) connectLocked(ctx context.Context) {
+	if ul.deleted || ul.clientStarted {
+		return
+	}
+	ul.clientStarted = true
+	ul.Client.Connect(ctx)
 }
