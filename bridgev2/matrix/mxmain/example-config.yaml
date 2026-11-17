@@ -102,6 +102,13 @@ bridge:
     #                        delete reaches every version: each kept one gets its own 🗑️ (or is
     #                        redacted with remote_deletes: redact). While enabled, ✏️ reactions sent
     #                        from Matrix aren't bridged.
+    #   inline_diff        - Edits by other people replace the message in place and show what changed
+    #                        inside it: removed words struck through in red, added ones in green, and
+    #                        -/+ lines in code blocks. A message kept by remote_deletes turns red, with
+    #                        no other marker. The bridge keeps the latest text of other people's
+    #                        messages in its database for this, since it can't read its own encrypted
+    #                        events back. Messages bridged before it was enabled, and media, are edited
+    #                        or kept as with replace. Your own edits replace in place.
     remote_edits: new_message_others
 
     # What should be done to portal rooms when a user logs out or is logged out?

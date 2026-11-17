@@ -3260,7 +3260,11 @@ func (portal *Portal) handleRemoteMessage(ctx context.Context, source *UserLogin
 			return EventHandlingResultFailed.WithError(err)
 		}
 	}
-	_, res = portal.sendConvertedMessage(ctx, source, evt.GetID(), intent, evt.GetSender().Sender, converted, ts, getStreamOrder(evt), nil, true)
+	var parts []*database.Message
+	parts, res = portal.sendConvertedMessage(ctx, source, evt.GetID(), intent, evt.GetSender().Sender, converted, ts, getStreamOrder(evt), nil, true)
+	if err = portal.rememberPartTexts(ctx, source, evt.GetSender().Sender, parts, converted.Parts); err != nil {
+		log.Err(err).Msg("Failed to keep message text for inline edit diffs")
+	}
 	if portal.currentlyTypingGhosts.Pop(intent.GetMXID()) {
 		err = intent.MarkTyping(ctx, portal.MXID, TypingTypeText, 0)
 		if err != nil {
@@ -3407,6 +3411,13 @@ func (portal *Portal) sendConvertedEdit(
 			txnID = remoteEditTxnID("version", part.Part.MXID)
 			part.Part.EditCount = 0
 		} else if !part.Part.HasFakeMXID() {
+			if portal.Bridge.Config.RemoteEdits == RemoteEditsInlineDiff && !part.DontBridge && !portal.isOwnPart(ctx, source, senderID, part.Part) {
+				if err := portal.applyInlineDiff(ctx, part); err != nil {
+					log.Err(err).Stringer("part_mxid", part.Part.MXID).Msg("Failed to mark what an edit changed")
+					errorList = append(errorList, err)
+					continue
+				}
+			}
 			part.Content.SetEdit(part.Part.MXID)
 			overrideMXID = false
 			if part.NewMentions != nil {
@@ -3952,6 +3963,9 @@ func (portal *Portal) handleRemoteMessageRemove(ctx context.Context, source *Use
 		return EventHandlingResultFailed.WithError(err)
 	} else if err = portal.deleteEditVersions(ctx, targetParts[0].ID); err != nil {
 		log.Err(err).Msg("Failed to delete kept edit versions from database")
+		return EventHandlingResultFailed.WithError(err)
+	} else if err = portal.deletePartTexts(ctx, targetParts); err != nil {
+		log.Err(err).Msg("Failed to delete kept message text from database")
 		return EventHandlingResultFailed.WithError(err)
 	}
 	return res
