@@ -100,7 +100,7 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 	marker := "🗑 Deleted in " + portal.Bridge.Network.GetName().DisplayName
 	var errorList []error
 	var unreadable *database.Message
-	edited := false
+	edited, redOnly := false, false
 	for _, part := range parts {
 		if part.HasFakeMXID() {
 			continue
@@ -112,7 +112,23 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 		} else if senderIntent != nil {
 			partIntent = senderIntent
 		}
-		content, err := portal.latestPartContent(ctx, partIntent, part, marker)
+		var content *event.MessageEventContent
+		var err error
+		if portal.Bridge.Config.RemoteEdits == RemoteEditsInlineDiff {
+			// With inline diffs the bridge keeps each part's text, so it can show
+			// it in red without reading its own encrypted event back.
+			var text *partText
+			if text, err = portal.getPartText(ctx, part); err != nil {
+				errorList = append(errorList, err)
+				continue
+			} else if text != nil {
+				content = deletedPartEdit(*text, part)
+				redOnly = true
+			}
+		}
+		if content == nil {
+			content, err = portal.latestPartContent(ctx, partIntent, part, marker)
+		}
 		if err != nil {
 			log.Warn().Err(err).Stringer("part_mxid", part.MXID).Msg("Can't read deleted message part back, leaving it untouched")
 			if unreadable == nil {
@@ -143,7 +159,9 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 			errorList = append(errorList, fmt.Errorf("failed to save marked part %q: %w", part.PartID, err))
 		}
 	}
-	if len(errorList) == 0 && (edited || unreadable != nil) {
+	// Red text alone marks a kept message when inline diffs show it, unless a
+	// part couldn't be kept that way and needs the reply.
+	if len(errorList) == 0 && (edited || unreadable != nil) && !(redOnly && unreadable == nil) {
 		if err := portal.sendRemoteDeleteMarkers(ctx, parts, unreadable, marker, ts); err != nil {
 			errorList = append(errorList, err)
 		}
@@ -152,6 +170,8 @@ func (portal *Portal) markMessageParts(ctx context.Context, parts []*database.Me
 		if err := portal.Bridge.DB.Message.DeleteAllParts(ctx, portal.Receiver, unreadable.ID); err != nil {
 			errorList = append(errorList, fmt.Errorf("failed to forget kept message: %w", err))
 		} else if err = portal.deleteEditVersions(ctx, unreadable.ID); err != nil {
+			errorList = append(errorList, err)
+		} else if err = portal.deletePartTexts(ctx, parts); err != nil {
 			errorList = append(errorList, err)
 		}
 	}
