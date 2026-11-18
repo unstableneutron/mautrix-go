@@ -13,7 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -260,30 +263,59 @@ type diffOp struct {
 }
 
 // diffTokens returns the edit script from a to b, or false when it would be
-// too large to compute.
-func diffTokens(a, b []string) ([]diffOp, bool) {
+// too large to compute. Prose retains the most non-whitespace text, rather
+// than preferring several tiny matches over a meaningful word or phrase.
+func diffTokens(a, b []string, prose bool) ([]diffOp, bool) {
+	equal := func(a, b string) bool {
+		return a == b || prose && strings.TrimSpace(a) == "" && strings.TrimSpace(b) == ""
+	}
+	var ops []diffOp
+	var suffix []string
+	if prose {
+		// Anchor the unchanged edges before aligning repeated words inside
+		// a replacement. Otherwise a moved phrase can steal its own suffix.
+		for len(a) > 0 && len(b) > 0 && equal(a[0], b[0]) {
+			ops = append(ops, diffOp{'=', b[0]})
+			a, b = a[1:], b[1:]
+		}
+		end := 0
+		for end < min(len(a), len(b)) && equal(a[len(a)-1-end], b[len(b)-1-end]) {
+			end++
+		}
+		suffix = b[len(b)-end:]
+		a, b = a[:len(a)-end], b[:len(b)-end]
+	}
 	if (len(a)+1)*(len(b)+1) > inlineDiffMaxCells {
 		return nil, false
+	}
+	weight := func(token string) int {
+		if !prose {
+			return 1
+		}
+		if strings.TrimSpace(token) == "" {
+			return 0
+		}
+		return utf8.RuneCountInString(token)
 	}
 	lcs := make([][]int, len(a)+1)
 	for i := range lcs {
 		lcs[i] = make([]int, len(b)+1)
 	}
 	for i := len(a) - 1; i >= 0; i-- {
+		w := weight(a[i])
 		for j := len(b) - 1; j >= 0; j-- {
-			if a[i] == b[j] {
-				lcs[i][j] = lcs[i+1][j+1] + 1
+			if equal(a[i], b[j]) {
+				lcs[i][j] = lcs[i+1][j+1] + w
 			} else {
 				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
 			}
 		}
 	}
-	var ops []diffOp
 	i, j := 0, 0
 	for i < len(a) && j < len(b) {
 		switch {
-		case a[i] == b[j]:
-			ops = append(ops, diffOp{'=', a[i]})
+		case equal(a[i], b[j]):
+			ops = append(ops, diffOp{'=', b[j]})
 			i, j = i+1, j+1
 		case lcs[i+1][j] >= lcs[i][j+1]:
 			ops = append(ops, diffOp{'-', a[i]})
@@ -299,20 +331,80 @@ func diffTokens(a, b []string) ([]diffOp, bool) {
 	for ; j < len(b); j++ {
 		ops = append(ops, diffOp{'+', b[j]})
 	}
+	for _, token := range suffix {
+		ops = append(ops, diffOp{'=', token})
+	}
 	return ops, true
+}
+
+// inlineDiffUnits groups soft-wrapped prose for alignment. Blank lines, list
+// rows, and fenced code still participate in the line diff individually.
+// Compare prose without layout whitespace, but render from the original units.
+func inlineDiffUnits(lines []string) (units, keys []string) {
+	inCode := false
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		start := i
+		i++
+		marker, rest := splitListMarker(line)
+		key := line
+		switch {
+		case isFence(line):
+			inCode = !inCode
+		case inCode:
+		case marker != "":
+			// Keep list markers and indentation; only normalize the item text.
+			key = marker + strings.Join(strings.Fields(rest), " ")
+		case strings.TrimSpace(line) == "":
+			key = ""
+		default:
+			for ; i < len(lines); i++ {
+				marker, _ := splitListMarker(lines[i])
+				if marker != "" || isFence(lines[i]) || strings.TrimSpace(lines[i]) == "" {
+					break
+				}
+			}
+			line = strings.Join(lines[start:i], "\n")
+			key = strings.Join(strings.Fields(line), " ")
+		}
+		units = append(units, line)
+		keys = append(keys, key)
+	}
+	return units, keys
 }
 
 // renderInlineDiff renders the new text with the changes since the old one
 // marked: struck red removals and green additions in prose, and −/+ lines
-// inside code blocks. It reports false when the texts are equal or the diff
-// would be too large, so the edit replaces the message without markers.
+// inside code blocks. It reports false when only prose layout changed or the
+// diff would be too large, so the edit replaces the message without markers.
 func renderInlineDiff(oldText, newText string) (string, bool) {
 	if oldText == newText {
 		return "", false
 	}
-	lineOps, ok := diffTokens(strings.Split(oldText, "\n"), strings.Split(newText, "\n"))
+	oldLines, newLines := strings.Split(oldText, "\n"), strings.Split(newText, "\n")
+	if (len(oldLines)+1)*(len(newLines)+1) > inlineDiffMaxCells {
+		return "", false
+	}
+	oldUnits, oldKeys := inlineDiffUnits(oldLines)
+	newUnits, newKeys := inlineDiffUnits(newLines)
+	if slices.Equal(oldKeys, newKeys) {
+		return "", false
+	}
+	lineOps, ok := diffTokens(oldKeys, newKeys, false)
 	if !ok {
 		return "", false
+	}
+	oldIndex, newIndex := 0, 0
+	for i := range lineOps {
+		if lineOps[i].kind == '-' {
+			lineOps[i].text = oldUnits[oldIndex]
+		} else {
+			lineOps[i].text = newUnits[newIndex]
+			newIndex++
+		}
+		if lineOps[i].kind != '+' {
+			oldIndex++
+		}
 	}
 	var out strings.Builder
 	inCode, open := false, ""
@@ -397,7 +489,7 @@ func renderInlineDiff(oldText, newText string) (string, bool) {
 		if op.kind == '+' {
 			out.WriteString(addedLine(op.text))
 		} else {
-			out.WriteString(html.EscapeString(op.text))
+			out.WriteString(escapedProse(op.text))
 		}
 	}
 	closeBlock(&out, open)
@@ -407,13 +499,17 @@ func renderInlineDiff(oldText, newText string) (string, bool) {
 // struck is a removed line, struck through in red after its list marker.
 func struck(line string) string {
 	marker, rest := splitListMarker(line)
-	return html.EscapeString(marker) + colored(inlineDiffRemoved, "<s>"+html.EscapeString(rest)+"</s>")
+	return html.EscapeString(marker) + colored(inlineDiffRemoved, "<s>"+escapedProse(rest)+"</s>")
 }
 
 // addedLine is an added line, in green with a + after its list marker.
 func addedLine(line string) string {
 	marker, rest := splitListMarker(line)
-	return html.EscapeString(marker) + colored(inlineDiffAdded, "+ "+html.EscapeString(rest))
+	return html.EscapeString(marker) + colored(inlineDiffAdded, "+ "+escapedProse(rest))
+}
+
+func escapedProse(text string) string {
+	return strings.ReplaceAll(html.EscapeString(text), "\n", "<br>")
 }
 
 // splitListMarker splits a list bullet or number, with its indentation, off a line.
@@ -439,21 +535,30 @@ func splitListMarker(line string) (marker, rest string) {
 	return "", line
 }
 
-// similarLines reports whether two lines share most of their words, so the
+// similarLines reports whether two lines share most of their tokens, so the
 // newer one is an edit of the older rather than a different line.
 func similarLines(oldLine, newLine string) bool {
 	a, b := splitWords(oldLine), splitWords(newLine)
-	ops, ok := diffTokens(a, b)
+	ops, ok := diffTokens(a, b, true)
 	if !ok {
 		return false
 	}
 	same := 0
 	for _, op := range ops {
-		if op.kind == '=' {
+		if op.kind == '=' && strings.TrimSpace(op.text) != "" {
 			same++
 		}
 	}
-	return 2*same >= max(len(a), len(b))
+	count := func(tokens []string) int {
+		count := 0
+		for _, token := range tokens {
+			if strings.TrimSpace(token) != "" {
+				count++
+			}
+		}
+		return count
+	}
+	return 2*same >= max(count(a), count(b))
 }
 
 func isFence(line string) bool {
@@ -471,7 +576,7 @@ func closeBlock(out *strings.Builder, open string) {
 
 // wordDiff marks the words that changed between two versions of a line.
 func wordDiff(oldLine, newLine string) string {
-	ops, ok := diffTokens(splitWords(oldLine), splitWords(newLine))
+	ops, ok := diffTokens(splitWords(oldLine), splitWords(newLine), true)
 	if !ok {
 		return colored(inlineDiffRemoved, "<s>"+html.EscapeString(oldLine)+"</s>") + " " + colored(inlineDiffAdded, html.EscapeString(newLine))
 	}
@@ -486,43 +591,61 @@ func wordDiff(oldLine, newLine string) string {
 		k--
 		text := run.String()
 		switch kind {
-		case '-':
-			// Keep the space beside a removal outside the strike.
+		case '-', '+':
+			if kind == '-' {
+				// Old soft wraps should not introduce breaks in the latest layout.
+				text = strings.ReplaceAll(text, "\n", " ")
+			}
+			// Keep surrounding whitespace outside the colored text.
 			trimmed := strings.TrimSpace(text)
 			if trimmed == "" {
-				out.WriteString(html.EscapeString(text))
+				// A whitespace-only replacement shows the latest spacing,
+				// not both versions (notably NBSP versus regular space).
+				if kind == '+' {
+					out.WriteString(escapedProse(text))
+				}
 				continue
 			}
-			out.WriteString(colored(inlineDiffRemoved, "<s>"+html.EscapeString(trimmed)+"</s>"))
-			if strings.HasSuffix(text, " ") || (k+1 < len(ops) && ops[k+1].kind == '+') {
-				out.WriteString(" ")
+			leading := text[:len(text)-len(strings.TrimLeftFunc(text, unicode.IsSpace))]
+			trailing := text[len(strings.TrimRightFunc(text, unicode.IsSpace)):]
+			out.WriteString(escapedProse(leading))
+			if kind == '-' {
+				out.WriteString(colored(inlineDiffRemoved, "<s>"+html.EscapeString(trimmed)+"</s>"))
+			} else {
+				out.WriteString(colored(inlineDiffAdded, escapedProse(trimmed)))
 			}
-		case '+':
-			trimmed := strings.TrimSpace(text)
-			if trimmed == "" {
-				out.WriteString(html.EscapeString(text))
-				continue
-			}
-			out.WriteString(colored(inlineDiffAdded, html.EscapeString(trimmed)))
-			if strings.HasSuffix(text, " ") {
+			out.WriteString(escapedProse(trailing))
+			if kind == '-' && trailing == "" && k+1 < len(ops) && ops[k+1].kind == '+' {
 				out.WriteString(" ")
 			}
 		default:
-			out.WriteString(html.EscapeString(text))
+			out.WriteString(escapedProse(text))
 		}
 	}
 	return out.String()
 }
 
-// splitWords splits a line into words, each with its trailing spaces.
+// splitWords keeps whitespace and punctuation separate from words, so a
+// changed comma or trailing space doesn't mark the adjacent word. Letters
+// and combining marks stay together, including decomposed Vietnamese text.
 func splitWords(line string) []string {
 	var words []string
 	start := 0
-	for i := 0; i < len(line); i++ {
-		if line[i] == ' ' && (i+1 == len(line) || line[i+1] != ' ') {
-			words = append(words, line[start:i+1])
-			start = i + 1
+	previous := -1
+	for i, r := range line {
+		kind := 0
+		if unicode.IsSpace(r) {
+			kind = 1
+		} else if unicode.IsPunct(r) {
+			kind = 2
+		} else if unicode.IsMark(r) && previous >= 0 {
+			kind = previous
 		}
+		if previous >= 0 && (kind != previous || unicode.IsPunct(r)) {
+			words = append(words, line[start:i])
+			start = i
+		}
+		previous = kind
 	}
 	if start < len(line) {
 		words = append(words, line[start:])

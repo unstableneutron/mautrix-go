@@ -33,6 +33,33 @@ func TestRenderInlineDiff(t *testing.T) {
 		new:  "anh thử check xem cụ thể lỗi gì ạ.",
 		want: `<p>anh thử check xem ` + removedSpan + `<s>cu</s></span> ` + addedSpan + `cụ</span> thể lỗi gì ạ.</p>`,
 	}, {
+		// Reconstructed from the screenshot; raw mention markup is unavailable.
+		name: "remove everyone without repeating the name",
+		old:  "e đang phỏng vấn anh Trịnh Thế Thành @Everyone",
+		new:  "e đang phỏng vấn anh Trịnh Thế Thành",
+		want: `<p>e đang phỏng vấn anh Trịnh Thế Thành ` + removedSpan + `<s>@Everyone</s></span></p>`,
+	}, {
+		// A plausible hidden-space variant, not a claim about the raw event.
+		name: "mention display with nonbreaking space",
+		old:  "e đang phỏng vấn anh\u00a0Trịnh Thế Thành @Everyone",
+		new:  "e đang phỏng vấn anh Trịnh Thế Thành",
+		want: `<p>e đang phỏng vấn anh Trịnh Thế Thành ` + removedSpan + `<s>@Everyone</s></span></p>`,
+	}, {
+		name: "decomposed Vietnamese and emoji stay whole",
+		old:  "Hẹn cu\u0323 👩‍💻 hôm nay",
+		new:  "Hẹn cu\u0303 👩‍💻 hôm nay",
+		want: `<p>Hẹn ` + removedSpan + "<s>cu\u0323</s></span> " + addedSpan + "cu\u0303</span> 👩‍💻 hôm nay</p>",
+	}, {
+		name: "retain meaningful phrase instead of several tiny words",
+		old:  "x a b c importantword z",
+		new:  "x importantword a b c z",
+		want: `<p>x ` + removedSpan + `<s>a b c</s></span> importantword ` + addedSpan + `a b c</span> z</p>`,
+	}, {
+		name: "moved phrase and punctuation keep surrounding words",
+		old:  "con giao tiếp với vsd lại là con vsd-client của vsd ạ, mà nó chạy bằng servicemix chứ không phải vsd-gw nhà mình, mà con này thì lại java8 a ạ",
+		new:  "con giao tiếp với vsd lại là con vsd-client của vsd chứ không phải vsd-gw nhà mình ạ, mà nó chạy bằng servicemix, mà con này thì lại java8 a ạ",
+		want: `<p>con giao tiếp với vsd lại là con vsd-client của vsd ` + removedSpan + `<s>ạ, mà nó chạy bằng servicemix</s></span> chứ không phải vsd-gw nhà mình ` + addedSpan + `ạ, mà nó chạy bằng servicemix</span>, mà con này thì lại java8 a ạ</p>`,
+	}, {
 		name: "list item added, removed and swapped",
 		old:  "Checklist:\n- Kiểm tra network.\n- Khởi động lại bridge.\n- Gửi log.",
 		new:  "Checklist:\n- Kiểm tra network.\n- Kiểm tra DNS.\n- Gửi log.\n- Báo anh.",
@@ -50,6 +77,21 @@ func TestRenderInlineDiff(t *testing.T) {
 		old:  "a <b>",
 		new:  "a <i>",
 		want: `<p>a ` + removedSpan + `<s>&lt;b&gt;</s></span> ` + addedSpan + `&lt;i&gt;</span></p>`,
+	}, {
+		name: "reflow with a real edit keeps latest line breaks",
+		old:  "Hẹn anh Trịnh\nThế Thành lúc 5 giờ",
+		new:  "Hẹn anh\nTrịnh Thế Thành lúc 10 giờ",
+		want: `<p>Hẹn anh<br>Trịnh Thế Thành lúc ` + removedSpan + `<s>5</s></span> ` + addedSpan + `10</span> giờ</p>`,
+	}, {
+		name: "paragraph and list boundaries survive prose reflow",
+		old:  "Hẹn anh\nTrịnh\n\n- Gửi log.\n- Chờ 5 phút.",
+		new:  "Hẹn anh Trịnh\n\n- Gửi log.\n- Chờ 10 phút.",
+		want: `<p>Hẹn anh Trịnh<br><br>- Gửi log.<br>- Chờ ` + removedSpan + `<s>5</s></span> ` + addedSpan + `10</span> phút.</p>`,
+	}, {
+		name: "code indentation remains a real edit",
+		old:  "```\n  run()\n```",
+		new:  "```\n    run()\n```",
+		want: `<pre><code>` + removedSpan + `-  run()</span><br>` + addedSpan + `+    run()</span></code></pre>`,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := renderInlineDiff(tc.old, tc.new)
@@ -60,6 +102,15 @@ func TestRenderInlineDiff(t *testing.T) {
 	}
 	if _, ok := renderInlineDiff("same", "same"); ok {
 		t.Error("an unchanged text got a diff")
+	}
+	for _, pair := range [][2]string{
+		{"e  đang phỏng vấn\nanh\u00a0Trịnh Thế Thành", "e đang phỏng vấn anh Trịnh Thế Thành"},
+		{"Hẹn anh Trịnh Thế Thành", "Hẹn\nanh Trịnh  Thế Thành"},
+		{"- Gửi  log.\n- Chờ 5 phút.", "- Gửi log.\n- Chờ 5 phút."},
+	} {
+		if got, ok := renderInlineDiff(pair[0], pair[1]); ok {
+			t.Errorf("layout-only edit got a diff: %s", got)
+		}
 	}
 	huge := strings.Repeat("line\n", 1000)
 	if _, ok := renderInlineDiff(huge+"a", "b\n"+huge); ok {
@@ -129,6 +180,28 @@ func TestInlineDiffEditsInPlace(t *testing.T) {
 	}
 }
 
+func TestInlineDiffFormattedMention(t *testing.T) {
+	portal, login := inlineDiffPortal(t)
+	part := partByID(t, portal, "msg", "1")
+	rememberText(t, portal, login, part, "Hẹn Thành @Everyone")
+	edit := editOf(part, "Hẹn Thành").ModifiedParts[0]
+	edit.Content.Format = event.FormatHTML
+	edit.Content.FormattedBody = `<p><strong>Hẹn</strong> <a href="https://matrix.to/#/@thanh:example.org">Thành</a></p>`
+	edit.Content.Mentions = &event.Mentions{Room: true}
+	cleanHTML := edit.Content.FormattedBody
+	mentions := edit.Content.Mentions
+	if err := portal.applyInlineDiff(context.Background(), edit); err != nil {
+		t.Fatal(err)
+	}
+	if edit.Content.FormattedBody != `<p>Hẹn Thành `+removedSpan+`<s>@Everyone</s></span></p>` || edit.Content.Mentions != mentions {
+		t.Fatalf("unexpected content: %+v", edit.Content)
+	}
+	stored, err := portal.getPartText(context.Background(), part)
+	if err != nil || stored == nil || stored.FormattedBody != cleanHTML {
+		t.Fatalf("lost clean formatted baseline: %+v, %v", stored, err)
+	}
+}
+
 // The user's own edits, and edits of messages whose text wasn't kept (sent
 // before inline diffs), replace in place without markers.
 func TestInlineDiffPlainEdits(t *testing.T) {
@@ -151,6 +224,21 @@ func TestInlineDiffPlainEdits(t *testing.T) {
 	// The unkept message's text is kept now, so its next edit is diffed.
 	if text, err := portal.getPartText(ctx, partByID(t, portal, "msg", "1")); err != nil || text == nil || text.Body != "new" {
 		t.Fatalf("kept text after first edit = %+v, %v", text, err)
+	}
+	// Layout-only edits still send the latest content (including its markup).
+	part := partByID(t, portal, "msg", "1")
+	rememberText(t, portal, login, part, "Hẹn anh\nTrịnh  Thế Thành")
+	layout := editOf(part, "Hẹn anh Trịnh Thế Thành")
+	content := layout.ModifiedParts[0].Content
+	content.Format = event.FormatHTML
+	content.FormattedBody = `<p>Hẹn anh Trịnh <strong>Thế Thành</strong></p>`
+	wantBody, wantHTML := content.Body, content.FormattedBody
+	if res := portal.sendConvertedEdit(ctx, login, "msg", "alice", layout, ghost, time.Now(), 0); !res.Success {
+		t.Fatalf("layout edit = %+v", res)
+	}
+	sent := ghost.contents[len(ghost.contents)-1].Parsed.(*event.MessageEventContent)
+	if sent.RelatesTo.GetReplaceID() != part.MXID || sent.NewContent == nil || sent.NewContent.Body != wantBody || sent.NewContent.FormattedBody != wantHTML {
+		t.Fatalf("layout edit changed latest content: %+v", sent.NewContent)
 	}
 }
 
